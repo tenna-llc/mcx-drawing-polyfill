@@ -441,12 +441,20 @@
             const shapeTypes = ['marker', 'polyline', 'polygon', 'circle', 'rectangle'];
             const center = window.testMap.getCenter();
 
-            // Generate shapes with blue color (#1a73e8 - Google blue)
-            const BLUE = '#1a73e8';
+            // Generate shapes with distinct colors for each type
+            const COLORS = {
+                marker: '#1a73e8',    // Blue
+                polyline: '#34a853',  // Green
+                polygon: '#e53935',   // Red
+                circle: '#f57c00',    // Orange
+                rectangle: '#00bcd4'  // Cyan
+            };
+
             for (let i = 0; i < batchSize; i++) {
                 const type = shapeTypes[i % shapeTypes.length];
                 const lat = center.lat() + (Math.random() - 0.5) * 0.1;
                 const lng = center.lng() + (Math.random() - 0.5) * 0.1;
+                const color = COLORS[type];
 
                 if (type === 'marker') {
                     new google.maps.Marker({
@@ -456,7 +464,7 @@
                         icon: {
                             path: google.maps.SymbolPath.CIRCLE,
                             scale: 8,
-                            fillColor: BLUE,
+                            fillColor: color,
                             fillOpacity: 0.8,
                             strokeColor: '#ffffff',
                             strokeWeight: 2
@@ -468,7 +476,7 @@
                             { lat: lat, lng: lng },
                             { lat: lat + 0.001, lng: lng + 0.001 }
                         ],
-                        strokeColor: BLUE,
+                        strokeColor: color,
                         strokeWeight: 2,
                         strokeOpacity: 0.8,
                         map: window.testMap,
@@ -488,12 +496,11 @@
                     }
                     polygonPath.push(polygonPath[0]); // Close the shape
 
-                    const RED = '#e53935';
                     new google.maps.Polygon({
                         paths: polygonPath,
-                        strokeColor: RED,
+                        strokeColor: color,
                         strokeWeight: 2,
-                        fillColor: RED,
+                        fillColor: color,
                         fillOpacity: 0.35,
                         map: window.testMap
                     });
@@ -501,9 +508,9 @@
                     new google.maps.Circle({
                         center: { lat: lat, lng: lng },
                         radius: 50,
-                        strokeColor: BLUE,
+                        strokeColor: color,
                         strokeWeight: 2,
-                        fillColor: BLUE,
+                        fillColor: color,
                         fillOpacity: 0.3,
                         map: window.testMap
                     });
@@ -516,9 +523,9 @@
                             east: lng + 0.0015,
                             west: lng - 0.0015
                         },
-                        strokeColor: BLUE,
+                        strokeColor: color,
                         strokeWeight: 3,
-                        fillColor: BLUE,
+                        fillColor: color,
                         fillOpacity: 0.35,
                         map: window.testMap
                     });
