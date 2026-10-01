@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>MCX Drawing Polyfill - Test Suite</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #1a73e8;
+            margin-bottom: 10px;
+        }
+        .info {
+            color: #666;
+            margin-bottom: 20px;
+        }
+        .test-output {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .pass {
+            color: #188038;
+        }
+        .fail {
+            color: #d33b27;
+        }
+        .summary {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+            font-weight: bold;
+        }
+        button {
+            background: #1a73e8;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        button:hover {
+            background: #1557b0;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MCX Drawing Polyfill Test Suite</h1>
+        <p class="info">Tests for lifecycle, map settings restoration, and overlay types</p>
+
+        <div class="controls">
+            <div style="margin-bottom: 15px;">
+                <label>Google Maps API Key (optional, stored in localStorage):</label><br>
+                <input type="password" id="apiKey" placeholder="Your API key" style="width: 300px; padding: 8px; margin-top: 5px;">
+                <button onclick="setApiKey()" style="margin-left: 10px;">Set API Key</button>
+            </div>
+            <button onclick="runTests()">Run Tests</button>
+        </div>
+
+        <div id="output" class="test-output" style="display:none;">
+            <div id="log"></div>
+        </div>
+    </div>
+
+    <!-- Google Maps (required for the polyfill to load) -->
+    <!-- IMPORTANT: Replace YOUR_API_KEY with your actual Google Maps API key -->
+    <script>
+        var usePolyfillGlobal = false; // Store for use in initMaps
+
+        function initMaps() {
+            console.log('Google Maps API loaded');
+            // Load the polyfill AFTER Maps API is ready (fixes load-order issue)
+            loadPolyfill();
+        }
+
+        function loadPolyfill() {
+            var s = document.createElement('script');
+            s.src = 'mcx-drawing-polyfill.js';
+            s.onload = loadTests;
+            s.onerror = function() {
+                console.error('Failed to load mcx-drawing-polyfill.js');
+                document.body.innerHTML += '<p style="color: red; padding: 20px;">ERROR: Failed to load mcx-drawing-polyfill.js. Check file exists in same directory.</p>';
+            };
+            document.head.appendChild(s);
+            if (usePolyfillGlobal) {
+                console.log('[TEST] Loading MCX Polyfill: mcx-drawing-polyfill.js');
+            }
+        }
+
+        function loadTests() {
+            if (usePolyfillGlobal) {
+                console.log('[TEST] ✓ Polyfill installed');
+            }
+            console.log('[TEST] Loading test suite...');
+            // Load test suite AFTER polyfill is ready
+            var s = document.createElement('script');
+            s.src = 'test-mcx-drawing.js';
+            s.onerror = function() {
+                console.error('[TEST] Failed to load test-mcx-drawing.js');
+            };
+            document.head.appendChild(s);
+            console.log('[TEST] Test suite script tag created');
+        }
+
+        // URL Query Params: ?use-polyfill=1/true for polyfill, ?use-polyfill=0/false for native, ?v=VERSION for version
+        var urlParams = new URLSearchParams(window.location.search);
+        var mapsVersion = urlParams.get('v') || '3.64';
+        var polyfillParam = urlParams.get('use-polyfill');
+        var usePolyfill = polyfillParam === '1' || polyfillParam === 'true';
+        usePolyfillGlobal = usePolyfill; // Store for loadPolyfill()
+
+        if (usePolyfill) {
+            window.mcxDrawingForce = true;
+            console.log('[TEST] Using MCX Polyfill');
+        } else {
+            console.log('[TEST] Using native Google Drawing Manager');
+        }
+
+        // If you don't have an API key, this will still load Google Maps in development mode
+        var mapsUrl = 'https://maps.googleapis.com/maps/api/js?v=' + mapsVersion;
+        var apiKey = localStorage.getItem('mcx-test-api-key') || '';
+        if (apiKey) {
+            mapsUrl = 'https://maps.googleapis.com/maps/api/js?key=' + apiKey + '&v=' + mapsVersion;
+        }
+
+        // Load native drawing library (unless using polyfill)
+        if (!usePolyfill) {
+            mapsUrl += '&libraries=drawing';
+        }
+
+        mapsUrl += '&callback=initMaps';
+        console.log('Loading Google Maps API v' + mapsVersion);
+
+        var script = document.createElement('script');
+        script.src = mapsUrl;
+        script.async = true;
+        document.head.appendChild(script);
+    </script>
+
+    <script>
+        function setApiKey() {
+            var key = document.getElementById('apiKey').value.trim();
+            if (key) {
+                localStorage.setItem('mcx-test-api-key', key);
+                alert('API key saved to localStorage. Please reload the page.');
+            }
+        }
+
+        function initMaps() {
+            console.log('Google Maps API loaded');
+        }
+
+        var logOutput = [];
+
+        // Override console methods to capture output
+        var originalLog = console.log;
+        var originalError = console.error;
+        var originalInfo = console.info;
+
+        console.log = function () {
+            var msg = Array.prototype.slice.call(arguments).join(' ');
+            logOutput.push(msg);
+            originalLog.apply(console, arguments);
+        };
+
+        console.error = function () {
+            var msg = Array.prototype.slice.call(arguments).join(' ');
+            logOutput.push('<span class="fail">' + msg + '</span>');
+            originalError.apply(console, arguments);
+        };
+
+        console.info = function () {
+            var msg = Array.prototype.slice.call(arguments).join(' ');
+            logOutput.push(msg);
+            originalInfo.apply(console, arguments);
+        };
+
+        async function runTests() {
+            var outputDiv = document.getElementById('output');
+            var logDiv = document.getElementById('log');
+            logOutput = [];
+
+            // Check if Maps API is loaded
+            if (typeof google === 'undefined' || typeof google.maps === 'undefined') {
+                logDiv.innerHTML = '<span class="fail">ERROR: Google Maps API not loaded yet. Check browser console for details. Wait a moment and try again.</span>';
+                outputDiv.style.display = 'block';
+                console.error('Maps API not loaded. Tried URL:', mapsUrl);
+                return;
+            }
+
+            // Check if the polyfill is loaded
+            if (typeof google.maps.drawing === 'undefined') {
+                var debugInfo = '<span class="fail">ERROR: MCX Drawing Polyfill not loaded.</span><br>';
+                debugInfo += 'google.maps exists: ' + (typeof google.maps !== 'undefined') + '<br>';
+                debugInfo += 'google.maps.drawing exists: ' + (typeof google.maps.drawing !== 'undefined') + '<br>';
+                debugInfo += 'Check browser console for script load errors.';
+                logDiv.innerHTML = debugInfo;
+                outputDiv.style.display = 'block';
+                console.error('Polyfill not loaded. Check if mcx-drawing-polyfill.js loaded successfully.');
+                return;
+            }
+
+            outputDiv.style.display = 'block';
+            logDiv.innerHTML = 'Running tests...<br>';
+
+            // Run the tests
+            await MCXDrawingTestRunner.run();
+
+            // Display the captured output
+            var html = '';
+            for (var i = 0; i < logOutput.length; i++) {
+                var line = logOutput[i];
+                if (line.includes('✓ PASS')) {
+                    html += '<span class="pass">' + line + '</span><br>';
+                } else if (line.includes('✗ FAIL')) {
+                    html += '<span class="fail">' + line + '</span><br>';
+                } else if (line.includes('Error:')) {
+                    html += '<span class="fail">  ' + line + '</span><br>';
+                } else {
+                    html += line + '<br>';
+                }
+            }
+            logDiv.innerHTML = html;
+        }
+    </script>
+</body>
+</html>

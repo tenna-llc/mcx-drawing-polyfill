@@ -1,4 +1,7 @@
-﻿/*!
+﻿console.log('[MCX-LOAD] Script file starting to execute');
+
+try {
+/*!
  * MCX Drawing — Google Maps Drawing Manager Polyfill (Unified)
  * Version 2.0.0
  *
@@ -105,6 +108,8 @@
 {
     'use strict';
 
+    console.log('[MCX] mcx-drawing-polyfill.js executing...');
+
     // ── Load-order guard ───────────────────────────────────
     // This file patches an object the Maps API owns. If it runs first there is
     // nothing to patch, and creating a stub `window.google` is worse than
@@ -114,16 +119,35 @@
     {
         console.error('[MCX] mcx-drawing-polyfill must be loaded AFTER the Google Maps JS API. ' +
             'Load it from the Maps API callback (see the bundled demos). Nothing was installed.');
+        console.error('[MCX] Debug: window.google=' + (typeof window.google) +
+            ', window.google.maps=' + (window.google ? typeof window.google.maps : 'N/A') +
+            ', window.google.maps.Map=' + (window.google && window.google.maps ? typeof window.google.maps.Map : 'N/A'));
         return;
     }
 
-    // Guard: only inject if the native library is absent
-    if (window.google.maps.drawing)
+    console.log('[MCX] Load-order guard passed');
+
+    // Flag to force use of MCX polyfill even if native DrawingManager exists
+    // Usage: window.mcxDrawingForce = true; before loading this script
+    var forcePolyfill = window.mcxDrawingForce === true;
+
+    // Guard: only inject if the native library is absent (or if forced)
+    if (window.google.maps.drawing && !forcePolyfill)
     {
+        console.log('[MCX] Native google.maps.drawing already exists, skipping polyfill');
+        console.log('[MCX] To force MCX Polyfill: set window.mcxDrawingForce = true before loading');
         return; // Native library present — do nothing
     }
 
-    var MCX_VERSION = '2.0.0';
+    if (forcePolyfill && window.google.maps.drawing)
+    {
+        console.log('[MCX] Force flag set: replacing native google.maps.drawing with MCX Polyfill');
+        delete window.google.maps.drawing;
+    }
+
+    console.log('[MCX] Installing polyfill...');
+
+    var MCX_VERSION = '2.00-tenna.1';
 
     // Informational logging is opt-out per manager (`silent: true`) and can be
     // killed page-wide with window.mcxDrawingSilent. Warnings always print.
@@ -290,6 +314,9 @@
         {
             options = options || {};
 
+            console.log('[MCX-DRAWING] DrawingManager constructor called - Using MCX POLYFILL v2.00-tenna.1');
+            console.log('[MCX-DRAWING] Initial options:', options);
+
             this._map = null;
             this._currentMode = options.drawingMode || null;
 
@@ -329,6 +356,10 @@
 
             // Resolved marker mode ('basic' | 'advanced'), decided at setMap() time
             this._markerMode = null;
+
+            // Saved map settings (restored when drawing stops)
+            this._savedMapSettings = null;
+            this._isDrawingActive = false; // Track if a drawing mode has been entered since attaching
 
             // Bind stable handler references
             this._onMapClick = this._handleMapClick.bind(this);
@@ -391,25 +422,36 @@
                 Object.assign(this._rectangleOptions, options.rectangleOptions);
             }
 
-            // Dotted preview line styling. `clickable` and `zIndex` are fixed
+            // Dashed preview line styling (smooth like Google native). `clickable` and `zIndex` are fixed
             // internally (documented) — everything else is overridable.
+            // Customize: { strokeColor: '#ff0000', strokeWeight: 3, strokeOpacity: 0.7 }
+            var defaultGhostColor = '#1a73e8'; // Google blue
             this._ghostlineOptions = {
-                strokeOpacity: 0, // The main solid stroke must be hidden for dots to work
+                strokeColor: defaultGhostColor,
+                strokeWeight: 2,
+                strokeOpacity: 0.5,
                 icons: [{
                     icon: {
-                        path: google.maps.SymbolPath.CIRCLE,
-                        fillColor: '#1a73e8',
-                        fillOpacity: 0.7,
-                        strokeOpacity: 0,
-                        scale: 2
+                        path: 'M 0,-1 0,1',
+                        strokeColor: defaultGhostColor,
+                        strokeOpacity: 0.5,
+                        strokeWeight: 2
                     },
                     offset: '0',
-                    repeat: '4px'
+                    repeat: '8px'
                 }]
             };
             if (options.ghostlineOptions)
             {
-                Object.assign(this._ghostlineOptions, options.ghostlineOptions);
+                // Merge user options and sync icon color with stroke color
+                var userGhostOptions = options.ghostlineOptions;
+                Object.assign(this._ghostlineOptions, userGhostOptions);
+
+                // If user changed strokeColor, update icon color too
+                if (userGhostOptions.strokeColor && this._ghostlineOptions.icons)
+                {
+                    this._ghostlineOptions.icons[0].icon.strokeColor = userGhostOptions.strokeColor;
+                }
             }
 
             // Finishing node styling — applies in BOTH marker modes.
@@ -463,13 +505,21 @@
         {
             if (this._map === map) return;
 
-            // Detach from old map
+            console.log('[MCX-DRAWING] setMap called:', map ? 'Attaching to map' : 'Detaching from map');
+
+            // Detach from old map, restoring settings if drawing was active
             if (this._map)
             {
+                console.log('[MCX-DRAWING] Detaching from previous map, restoring settings');
+                this._restoreMapSettings();
                 this._detachFromMap();
             }
 
             this._map = map;
+
+            if (map) {
+                console.log('[MCX-DRAWING] Map attached successfully');
+            }
 
             if (map)
             {
@@ -504,6 +554,8 @@
 
         DrawingManager.prototype.setDrawingMode = function (mode)
         {
+            console.log('[MCX-DRAWING] setDrawingMode called:', mode ? 'Entering ' + mode + ' mode' : 'Exiting drawing mode (pan)');
+
             this._cancelShapeDraw();   // abandon any half-drawn circle/rectangle
             this._cancelCurrentDraw();
 
@@ -532,8 +584,29 @@
 
             if (this._map)
             {
-                // Circle/Rectangle are drag-to-draw, so panning must be off while active
-                this._map.setOptions({ draggable: !_isDragShapeMode(mode) });
+                if (mode)
+                {
+                    // Save original map settings when entering a drawing mode
+                    if (!this._savedMapSettings && !this._isDrawingActive)
+                    {
+                        this._savedMapSettings = {
+                            gestureHandling: this._map.get('gestureHandling'),
+                            disableDoubleClickZoom: this._map.get('disableDoubleClickZoom')
+                        };
+                    }
+                    this._isDrawingActive = true;
+
+                    // Circle/Rectangle are drag-to-draw, so panning must be off while active
+                    var newOptions = {
+                        gestureHandling: _isDragShapeMode(mode) ? 'none' : 'auto',
+                        disableDoubleClickZoom: true
+                    };
+                    this._map.setOptions(newOptions);
+                } else
+                {
+                    // Restore original map settings when exiting drawing mode
+                    this._restoreMapSettings();
+                }
             }
         };
 
@@ -581,6 +654,19 @@
             }
 
             if (options.drawingMode !== undefined) this.setDrawingMode(options.drawingMode);
+        };
+
+        // Restore map settings to their saved state, then clear the saved state.
+        // Called when exiting drawing mode or detaching from the map.
+        DrawingManager.prototype._restoreMapSettings = function ()
+        {
+            if (!this._map) return;
+            if (this._savedMapSettings)
+            {
+                this._map.setOptions(this._savedMapSettings);
+                this._savedMapSettings = null;
+            }
+            this._isDrawingActive = false;
         };
 
         // Overlays completed by this manager, oldest first (live array copy).
@@ -795,6 +881,9 @@
                 this._toolbar.parentElement.removeChild(this._toolbar);
                 this._toolbar = null;
             }
+
+            // Clear drawing mode when detaching so the manager starts fresh on re-attach
+            this._currentMode = null;
         };
 
         // ── Map event handlers ─────────────────────────────
@@ -1188,6 +1277,9 @@
 
             this._trackCompleted(preview);
 
+            var shapeType = (mode === 'circle' ? 'CIRCLE' : 'RECTANGLE').toUpperCase();
+            console.log('[MCX-DRAWING]', shapeType, 'created | Via MCX Polyfill');
+
             google.maps.event.trigger(this, 'overlaycomplete', { type: mode, overlay: preview });
             google.maps.event.trigger(this, mode + 'complete', preview); // circlecomplete / rectanglecomplete
 
@@ -1232,6 +1324,8 @@
             var self = this;
             this._trackCompleted(mockMarker);
 
+            console.log('[MCX-DRAWING] MARKER created at', latLng, '| Mode:', this._markerMode, '| Via MCX Polyfill');
+
             google.maps.event.trigger(self, 'overlaycomplete', {
                 type: OverlayType.MARKER,
                 overlay: mockMarker
@@ -1263,6 +1357,8 @@
                 mockOverlay = new google.maps.Polyline(options);
                 this._trackCompleted(mockOverlay);
 
+                console.log('[MCX-DRAWING] POLYLINE created with', coords.length, 'vertices | Via MCX Polyfill');
+
                 google.maps.event.trigger(self, 'overlaycomplete', {
                     type: OverlayType.POLYLINE,
                     overlay: mockOverlay
@@ -1277,6 +1373,8 @@
                 });
                 mockOverlay = new google.maps.Polygon(options);
                 this._trackCompleted(mockOverlay);
+
+                console.log('[MCX-DRAWING] POLYGON created with', coords.length, 'vertices | Via MCX Polyfill');
 
                 google.maps.event.trigger(self, 'overlaycomplete', {
                     type: OverlayType.POLYGON,
@@ -1359,18 +1457,16 @@
             if (this._currentMode)
             {
                 if (container) container.style.cursor = 'crosshair';
-                // Lock crosshairs and disable double click zooming while drawing
+                // Lock crosshairs while drawing (disableDoubleClickZoom handled in setDrawingMode)
                 this._map.setOptions({
-                    draggableCursor: 'crosshair',
-                    disableDoubleClickZoom: true
+                    draggableCursor: 'crosshair'
                 });
             } else
             {
                 if (container) container.style.cursor = '';
-                // Restore map defaults
+                // Restore map cursor defaults (gesture handling restored in setDrawingMode)
                 this._map.setOptions({
-                    draggableCursor: '',
-                    disableDoubleClickZoom: false
+                    draggableCursor: ''
                 });
             }
         };
@@ -1494,4 +1590,10 @@
     _info('[MCX] Drawing Manager Polyfill v' + MCX_VERSION +
         ' loaded (google.maps.drawing replacement — markers, lines, polygons, circles, rectangles).');
 
+    console.log('[MCX] ✓ Polyfill installed successfully. google.maps.drawing is now available.');
+
 }());
+} catch (e) {
+    console.error('[MCX] FATAL ERROR in polyfill:', e);
+    console.error('[MCX] Stack:', e.stack);
+}
