@@ -153,19 +153,62 @@
                     </ol>
                 </div>
 
-                <input type="password" id="apiKey" placeholder="Google Maps API Key">
-                <button onclick="loadMapAndPolyfill()">Load Map & Polyfill</button>
+                <!-- API Key -->
+                <input type="password" id="apiKey" placeholder="Google Maps API Key" style="margin-bottom: 15px;">
+
+                <!-- Controls -->
+                <div style="margin-bottom: 15px;">
+                    <label><strong>Maps Version:</strong></label>
+                    <select id="mapsVersion" style="width: 100%; padding: 8px; margin-top: 5px;">
+                        <option value="3.64" selected>3.64 (Default - Production)</option>
+                        <option value="3.65">3.65</option>
+                        <option value="3.66">3.66</option>
+                        <option value="weekly">Latest (Weekly)</option>
+                    </select>
+                </div>
+
+                <div style="margin-bottom: 15px;">
+                    <label><strong>DrawingManager:</strong></label>
+                    <div style="margin-top: 5px;">
+                        <label style="display: block; margin-bottom: 8px;">
+                            <input type="radio" name="drawingManager" value="native" checked> Native Google Drawing
+                        </label>
+                        <label style="display: block;">
+                            <input type="radio" name="drawingManager" value="polyfill"> MCX Polyfill (v2.00-tenna.1)
+                        </label>
+                    </div>
+                </div>
+
+                <button onclick="loadMapAndPolyfill()" style="width: 100%; padding: 12px; margin-bottom: 15px; background: #1a73e8;">
+                  Load Map & DrawingManager
+                </button>
 
                 <div id="status" class="status" style="display: none;"></div>
                 <div id="log" class="log"></div>
             </div>
 
             <div class="card">
-                <h2>Test Checklist</h2>
-                <button onclick="performanceTest()" style="background: #ff9800; width: 100%; margin-bottom: 15px;">
-                  ⚡ Add 10,000 Shapes (Performance Test)
-                </button>
+                <h2>Performance Testing</h2>
+                <div style="margin-bottom: 15px;">
+                    <label><strong>Add Shapes (Performance Test):</strong></label>
+                    <div style="margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button onclick="performanceTest(10)" style="background: #ff9800; flex: 1; min-width: 100px;">
+                          ⚡ Add 10
+                        </button>
+                        <button onclick="performanceTest(100)" style="background: #ff9800; flex: 1; min-width: 100px;">
+                          ⚡ Add 100
+                        </button>
+                        <button onclick="performanceTest(1000)" style="background: #ff9800; flex: 1; min-width: 100px;">
+                          ⚡ Add 1,000
+                        </button>
+                        <button onclick="performanceTest(10000)" style="background: #ff9800; flex: 1; min-width: 100px;">
+                          ⚡ Add 10,000
+                        </button>
+                    </div>
+                </div>
                 <div id="perfStatus1" style="margin-bottom: 15px; font-size: 13px; color: #ff9800; font-weight: bold;"></div>
+
+                <h2>Test Checklist</h2>
                 <div class="test-item">
                     <div class="test-name">1. Marker</div>
                     <div class="test-steps">
@@ -256,23 +299,6 @@
             <div id="map"></div>
         </div>
 
-        <div class="card">
-            <h2>⚡ Performance & Stress Testing</h2>
-            <p style="color: #666; margin: 0 0 15px;">Test map performance with large datasets. Each click adds 10,000 shapes.</p>
-            <button onclick="performanceTest()" style="background: #ff9800; width: 100%; margin-bottom: 10px; padding: 12px;">
-              Add 10,000 Shapes
-            </button>
-            <div id="perfStatus2" style="font-size: 13px; color: #ff9800; font-weight: bold;"></div>
-            <div style="margin-top: 15px; padding: 10px; background: #f9f9f9; border-left: 3px solid #ff9800; font-size: 12px; color: #666;">
-              <strong>Tips:</strong>
-              <ul style="margin: 5px 0; padding-left: 20px;">
-                <li>Click multiple times to test cumulative load</li>
-                <li>Watch performance metrics (time in milliseconds)</li>
-                <li>Monitor browser memory and FPS</li>
-                <li>Compare with native Google Drawing Manager</li>
-              </ul>
-            </div>
-        </div>
     </div>
 
     <script>
@@ -306,17 +332,13 @@
 
             localStorage.setItem('mcx-manual-test-key', apiKey);
 
-            // URL Query Params (manage polyfill + version):
-            // ?use-polyfill=1 or ?use-polyfill=true → Use MCX Polyfill
-            // ?use-polyfill=0 or ?use-polyfill=false → Use native Google Drawing
-            // ?v=3.65                               → Override version (default 3.64)
-            const urlParams = new URLSearchParams(window.location.search);
-            const polyfillParam = urlParams.get('use-polyfill');
-            const usePolyfill = polyfillParam === '1' || polyfillParam === 'true';
-            const mapsVersion = urlParams.get('v') || '3.64';
+            // Get UI selections
+            const mapsVersion = document.getElementById('mapsVersion').value;
+            const drawingManagerType = document.querySelector('input[name="drawingManager"]:checked').value;
+            const usePolyfill = drawingManagerType === 'polyfill';
 
             if (usePolyfill) {
-                log('Using MCX Polyfill');
+                log('Using MCX Polyfill (v2.00-tenna.1)');
                 window.mcxDrawingForce = true;
             } else {
                 log('Loading native Google Drawing Manager');
@@ -400,8 +422,9 @@
         }
 
         window.performanceTestBatch = window.performanceTestBatch || 0;
+        window.totalShapesAdded = window.totalShapesAdded || 0;
 
-        function performanceTest() {
+        function performanceTest(batchSize) {
             if (!window.testMap || !window.testDrawingManager) {
                 alert('Please load map first!');
                 return;
@@ -409,23 +432,17 @@
 
             window.performanceTestBatch++;
             const batchNumber = window.performanceTestBatch;
-            const shapesPerBatch = 10000;
 
-            // Disable all performance buttons
-            const buttons = document.querySelectorAll('button');
-            buttons.forEach(btn => {
-                if (btn.textContent.includes('10,000 Shapes')) {
-                    btn.disabled = true;
-                    btn.textContent = 'Adding 10,000 shapes (Batch ' + batchNumber + ')...';
-                }
-            });
+            // Disable performance buttons
+            const perfButtons = document.querySelectorAll('button[onclick*="performanceTest"]');
+            perfButtons.forEach(btn => btn.disabled = true);
 
             const startTime = performance.now();
             const shapeTypes = ['marker', 'polyline', 'polygon', 'circle', 'rectangle'];
             const center = window.testMap.getCenter();
 
-            // Generate 10,000 random shapes
-            for (let i = 0; i < 10000; i++) {
+            // Generate shapes
+            for (let i = 0; i < batchSize; i++) {
                 const type = shapeTypes[i % shapeTypes.length];
                 const lat = center.lat() + (Math.random() - 0.5) * 0.1;
                 const lng = center.lng() + (Math.random() - 0.5) * 0.1;
@@ -434,7 +451,7 @@
                     new google.maps.Marker({
                         position: { lat: lat, lng: lng },
                         map: window.testMap,
-                        title: 'Performance Test Marker ' + i
+                        title: 'Test Marker ' + i
                     });
                 } else if (type === 'polyline') {
                     new google.maps.Polyline({
@@ -476,25 +493,19 @@
 
             const endTime = performance.now();
             const timeMs = (endTime - startTime).toFixed(2);
-            const totalShapesAdded = batchNumber * shapesPerBatch;
-            const resultMsg = '✅ Batch #' + batchNumber + ': Added 10,000 shapes in ' + timeMs + 'ms | Total performance test shapes: ' + totalShapesAdded;
+            window.totalShapesAdded += batchSize;
+            const resultMsg = '✅ Batch #' + batchNumber + ': Added ' + batchSize.toLocaleString() + ' shapes in ' + timeMs + 'ms | Total: ' + window.totalShapesAdded.toLocaleString() + ' shapes';
 
-            // Update all perfStatus elements
+            // Update perfStatus elements
             const perfStatus1 = document.getElementById('perfStatus1');
             const perfStatus2 = document.getElementById('perfStatus2');
             if (perfStatus1) perfStatus1.innerHTML = resultMsg;
             if (perfStatus2) perfStatus2.innerHTML = resultMsg;
 
-            // Re-enable all performance buttons
-            buttons = document.querySelectorAll('button');
-            buttons.forEach(btn => {
-                if (btn.textContent.includes('10,000 Shapes')) {
-                    btn.disabled = false;
-                    btn.textContent = 'Add 10,000 Shapes';
-                }
-            });
+            // Re-enable performance buttons
+            perfButtons.forEach(btn => btn.disabled = false);
 
-            log('Performance test: 10,000 shapes added in ' + timeMs + 'ms');
+            log('Performance test: ' + batchSize.toLocaleString() + ' shapes added in ' + timeMs + 'ms (Total: ' + window.totalShapesAdded.toLocaleString() + ')');
         }
 
         // Load saved API key on page load
