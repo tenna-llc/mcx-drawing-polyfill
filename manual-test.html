@@ -452,7 +452,15 @@
                     new google.maps.Marker({
                         position: { lat: lat, lng: lng },
                         map: window.testMap,
-                        title: 'Test Marker ' + i
+                        title: 'Test Marker ' + i,
+                        icon: {
+                            path: google.maps.SymbolPath.CIRCLE,
+                            scale: 8,
+                            fillColor: BLUE,
+                            fillOpacity: 0.8,
+                            strokeColor: '#ffffff',
+                            strokeWeight: 2
+                        }
                     });
                 } else if (type === 'polyline') {
                     new google.maps.Polyline({
