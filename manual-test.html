@@ -475,8 +475,8 @@
                         geodesic: true
                     });
                 } else if (type === 'polygon') {
-                    // Create polygon with 6-8 random points
-                    const numPoints = 6 + Math.floor(Math.random() * 3);
+                    // Create polygon with 10 corners
+                    const numPoints = 10;
                     const polygonPath = [];
                     for (let p = 0; p < numPoints; p++) {
                         const angle = (p / numPoints) * Math.PI * 2;
