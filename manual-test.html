@@ -370,9 +370,21 @@
 
         function loadPolyfill(isPolyfillMode) {
             isPolyfillModeGlobal = isPolyfillMode; // Store for initTest
-            if (isPolyfillMode) {
+
+            // Check if native Drawing Manager loaded
+            const hasNativeDrawing = window.google && window.google.maps.drawing;
+
+            // If user selected Native but it's not available, auto-switch to polyfill
+            if (!isPolyfillMode && !hasNativeDrawing) {
+                log('⚠️  Native Drawing Manager not available - auto-switching to MCX Polyfill');
+                window.mcxDrawingForce = true;
+                isPolyfillModeGlobal = true;
+            }
+
+            if (isPolyfillModeGlobal) {
                 log('Loading MCX Polyfill...');
             }
+
             const script = document.createElement('script');
             script.src = 'mcx-drawing-polyfill.js';
             script.onload = initTest;
@@ -382,14 +394,26 @@
 
         function initTest() {
             if (!window.google || !window.google.maps.drawing) {
-                setStatus('❌ Polyfill not installed', 'error');
+                setStatus('❌ Drawing library not available', 'error');
                 log('ERROR: google.maps.drawing not available');
                 return;
             }
 
+            // Check if we got native DrawingManager or had to fallback to polyfill
+            const hasNativeDrawing = window.google.maps.drawing && !window.mcxDrawingForce;
+
             if (isPolyfillModeGlobal) {
                 log('✓ Polyfill installed');
+                log('Using MCX Polyfill v2.00-tenna.1 (by user selection)');
+            } else if (!hasNativeDrawing && window.google.maps.drawing) {
+                // Native wasn't available, but polyfill is running
+                log('⚠️  Native Google Drawing Manager not available in this Maps version');
+                log('✓ Automatically switched to MCX Polyfill v2.00-tenna.1 as fallback');
+                setStatus('⚠️ Using MCX Polyfill (Native not available in this version)', 'ready');
+            } else {
+                log('✓ Using native Google Drawing Manager');
             }
+
             log('Initializing map...');
 
             window.testMap = new google.maps.Map(document.getElementById('map'), {
