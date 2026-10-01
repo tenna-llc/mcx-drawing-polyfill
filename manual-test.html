@@ -484,15 +484,7 @@
                     new google.maps.Marker({
                         position: { lat: lat, lng: lng },
                         map: window.testMap,
-                        title: 'Test Marker ' + i,
-                        icon: {
-                            path: google.maps.SymbolPath.CIRCLE,
-                            scale: 8,
-                            fillColor: color,
-                            fillOpacity: 0.8,
-                            strokeColor: '#ffffff',
-                            strokeWeight: 2
-                        }
+                        title: 'Test Marker ' + i
                     });
                 } else if (type === 'polyline') {
                     new google.maps.Polyline({
