@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCX Drawing Polyfill - Manual Shape Creation Test</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .top {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 { margin: 0 0 10px; color: #1a73e8; }
+        h2 { margin: 0 0 15px; color: #333; font-size: 16px; border-bottom: 2px solid #1a73e8; padding-bottom: 10px; }
+        #map {
+            height: 600px;
+            width: 100%;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+        .instructions {
+            background: #e3f2fd;
+            border-left: 4px solid #1a73e8;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }
+        .test-item {
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        .test-item:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        .test-name {
+            font-weight: 600;
+            color: #1a73e8;
+            margin-bottom: 5px;
+        }
+        .test-steps {
+            font-size: 13px;
+            color: #666;
+            margin: 8px 0;
+            padding-left: 20px;
+        }
+        .test-steps li {
+            margin: 4px 0;
+        }
+        .checkbox {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ddd;
+            border-radius: 3px;
+            cursor: pointer;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        .checkbox.checked {
+            background: #188038;
+            border-color: #188038;
+            color: white;
+            font-weight: bold;
+            text-align: center;
+            line-height: 16px;
+        }
+        input[type="password"] {
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        button {
+            background: #1a73e8;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            width: 100%;
+        }
+        button:hover {
+            background: #1557b0;
+        }
+        .status {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+            font-weight: 600;
+        }
+        .status.ready {
+            background: #e8f5e9;
+            color: #188038;
+        }
+        .status.error {
+            background: #ffebee;
+            color: #d33b27;
+        }
+        .log {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 150px;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+        .log-entry {
+            margin: 3px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="top">
+            <div class="card">
+                <h1>Shape Creation Test</h1>
+                <div class="instructions">
+                    <strong>Instructions:</strong>
+                    <ol style="margin: 8px 0; padding-left: 20px;">
+                        <li>Enter your Google Maps API key</li>
+                        <li>Click "Load Map & Polyfill"</li>
+                        <li>Use toolbar to select each shape type</li>
+                        <li>Draw the shape on the map</li>
+                        <li>Check off test when shape appears correctly</li>
+                    </ol>
+                </div>
+
+                <input type="password" id="apiKey" placeholder="Google Maps API Key">
+                <button onclick="loadMapAndPolyfill()">Load Map & Polyfill</button>
+
+                <div id="status" class="status" style="display: none;"></div>
+                <div id="log" class="log"></div>
+            </div>
+
+            <div class="card">
+                <h2>Test Checklist</h2>
+                <button onclick="performanceTest()" style="background: #ff9800; width: 100%; margin-bottom: 15px;">
+                  ⚡ Add 10,000 Shapes (Performance Test)
+                </button>
+                <div id="perfStatus1" style="margin-bottom: 15px; font-size: 13px; color: #ff9800; font-weight: bold;"></div>
+                <div class="test-item">
+                    <div class="test-name">1. Marker</div>
+                    <div class="test-steps">
+                        <strong>Steps:</strong>
+                        <ul>
+                            <li>Click Marker tool (pin icon)</li>
+                            <li>Click anywhere on map</li>
+                            <li>Verify pin appears at click location</li>
+                        </ul>
+                    </div>
+                    <span class="checkbox" onclick="toggleTest(this)"></span> Marker works
+                </div>
+
+                <div class="test-item">
+                    <div class="test-name">2. Polyline</div>
+                    <div class="test-steps">
+                        <strong>Steps:</strong>
+                        <ul>
+                            <li>Click Polyline tool (line icon)</li>
+                            <li>Click 2+ points on map</li>
+                            <li>Click white circle to finish</li>
+                            <li>Verify line connects all points</li>
+                        </ul>
+                    </div>
+                    <span class="checkbox" onclick="toggleTest(this)"></span> Polyline works
+                </div>
+
+                <div class="test-item">
+                    <div class="test-name">3. Polygon</div>
+                    <div class="test-steps">
+                        <strong>Steps:</strong>
+                        <ul>
+                            <li>Click Polygon tool</li>
+                            <li>Click 3+ points on map</li>
+                            <li>Click white circle at first point to close</li>
+                            <li>Verify polygon closes and fills</li>
+                        </ul>
+                    </div>
+                    <span class="checkbox" onclick="toggleTest(this)"></span> Polygon works
+                </div>
+
+                <div class="test-item">
+                    <div class="test-name">4. Circle</div>
+                    <div class="test-steps">
+                        <strong>Steps:</strong>
+                        <ul>
+                            <li>Click Circle tool</li>
+                            <li>Click and drag to draw circle</li>
+                            <li>Release mouse to finish</li>
+                            <li>Verify circular shape appears</li>
+                        </ul>
+                    </div>
+                    <span class="checkbox" onclick="toggleTest(this)"></span> Circle works
+                </div>
+
+                <div class="test-item">
+                    <div class="test-name">5. Rectangle</div>
+                    <div class="test-steps">
+                        <strong>Steps:</strong>
+                        <ul>
+                            <li>Click Rectangle tool</li>
+                            <li>Click and drag to draw rectangle</li>
+                            <li>Release mouse to finish</li>
+                            <li>Verify rectangular shape appears</li>
+                        </ul>
+                    </div>
+                    <span class="checkbox" onclick="toggleTest(this)"></span> Rectangle works
+                </div>
+
+                <div class="test-item">
+                    <div class="test-name">6. Settings Restoration</div>
+                    <div class="test-steps">
+                        <strong>Steps:</strong>
+                        <ul>
+                            <li>Draw a shape (any type)</li>
+                            <li>Switch back to Pan (hand icon)</li>
+                            <li>Verify map pans smoothly</li>
+                            <li>Verify double-click zooms work</li>
+                        </ul>
+                    </div>
+                    <span class="checkbox" onclick="toggleTest(this)"></span> Settings restored
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Map</h2>
+            <div id="map"></div>
+        </div>
+
+        <div class="card">
+            <h2>⚡ Performance & Stress Testing</h2>
+            <p style="color: #666; margin: 0 0 15px;">Test map performance with large datasets. Each click adds 10,000 shapes.</p>
+            <button onclick="performanceTest()" style="background: #ff9800; width: 100%; margin-bottom: 10px; padding: 12px;">
+              Add 10,000 Shapes
+            </button>
+            <div id="perfStatus2" style="font-size: 13px; color: #ff9800; font-weight: bold;"></div>
+            <div style="margin-top: 15px; padding: 10px; background: #f9f9f9; border-left: 3px solid #ff9800; font-size: 12px; color: #666;">
+              <strong>Tips:</strong>
+              <ul style="margin: 5px 0; padding-left: 20px;">
+                <li>Click multiple times to test cumulative load</li>
+                <li>Watch performance metrics (time in milliseconds)</li>
+                <li>Monitor browser memory and FPS</li>
+                <li>Compare with native Google Drawing Manager</li>
+              </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function log(msg) {
+            const logEl = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = new Date().toLocaleTimeString() + ' — ' + msg;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function setStatus(msg, type) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = msg;
+            statusEl.className = 'status ' + type;
+            statusEl.style.display = 'block';
+        }
+
+        function toggleTest(el) {
+            el.classList.toggle('checked');
+            el.textContent = el.classList.contains('checked') ? '✓' : '';
+        }
+
+        function loadMapAndPolyfill() {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            if (!apiKey) {
+                setStatus('❌ Please enter API key', 'error');
+                return;
+            }
+
+            localStorage.setItem('mcx-manual-test-key', apiKey);
+
+            // URL Query Params (manage polyfill + version):
+            // ?use-polyfill=1 or ?use-polyfill=true → Use MCX Polyfill
+            // ?use-polyfill=0 or ?use-polyfill=false → Use native Google Drawing
+            // ?v=3.65                               → Override version (default 3.64)
+            const urlParams = new URLSearchParams(window.location.search);
+            const polyfillParam = urlParams.get('use-polyfill');
+            const usePolyfill = polyfillParam === '1' || polyfillParam === 'true';
+            const mapsVersion = urlParams.get('v') || '3.64';
+
+            if (usePolyfill) {
+                log('Using MCX Polyfill');
+                window.mcxDrawingForce = true;
+            } else {
+                log('Loading native Google Drawing Manager');
+            }
+
+            log('Loading Google Maps API v' + mapsVersion + '...');
+
+            window.onMapsLoaded = function() {
+                log('✓ Maps API v' + mapsVersion + ' loaded successfully');
+                loadPolyfill(usePolyfill);
+            };
+
+            // Load Maps API
+            const script = document.createElement('script');
+            let mapsUrl = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&v=${mapsVersion}`;
+
+            // Load native drawing library (unless using polyfill)
+            if (!usePolyfill) {
+                mapsUrl += '&libraries=drawing';
+            }
+
+            mapsUrl += '&callback=onMapsLoaded';
+            script.src = mapsUrl;
+            script.onerror = () => setStatus('❌ Failed to load Maps API', 'error');
+            document.head.appendChild(script);
+        }
+
+        var isPolyfillModeGlobal = false; // Store mode for initTest
+
+        function loadPolyfill(isPolyfillMode) {
+            isPolyfillModeGlobal = isPolyfillMode; // Store for initTest
+            if (isPolyfillMode) {
+                log('Loading MCX Polyfill...');
+            }
+            const script = document.createElement('script');
+            script.src = 'mcx-drawing-polyfill.js';
+            script.onload = initTest;
+            script.onerror = () => setStatus('❌ Failed to load polyfill', 'error');
+            document.head.appendChild(script);
+        }
+
+        function initTest() {
+            if (!window.google || !window.google.maps.drawing) {
+                setStatus('❌ Polyfill not installed', 'error');
+                log('ERROR: google.maps.drawing not available');
+                return;
+            }
+
+            if (isPolyfillModeGlobal) {
+                log('✓ Polyfill installed');
+            }
+            log('Initializing map...');
+
+            window.testMap = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: 40.7128, lng: -74.0060 },
+                zoom: 12,
+                mapTypeId: 'roadmap'
+            });
+
+            log('✓ Map created');
+
+            window.testDrawingManager = new google.maps.drawing.DrawingManager({
+                drawingMode: null,
+                drawingControl: true,
+                drawingControlOptions: {
+                    position: google.maps.ControlPosition.TOP_CENTER,
+                    drawingModes: ['marker', 'polyline', 'polygon', 'circle', 'rectangle']
+                }
+            });
+            window.testDrawingManager.setMap(window.testMap);
+
+            log('✓ DrawingManager ready');
+
+            window.shapeCount = 0;
+            google.maps.event.addListener(window.testDrawingManager, 'overlaycomplete', function(e) {
+                window.shapeCount++;
+                log('✓ ' + e.type.toUpperCase() + ' created (#' + window.shapeCount + ')');
+            });
+
+            setStatus('✅ Ready! Draw shapes using the toolbar', 'ready');
+        }
+
+        window.performanceTestBatch = window.performanceTestBatch || 0;
+
+        function performanceTest() {
+            if (!window.testMap || !window.testDrawingManager) {
+                alert('Please load map first!');
+                return;
+            }
+
+            window.performanceTestBatch++;
+            const batchNumber = window.performanceTestBatch;
+            const shapesPerBatch = 10000;
+
+            // Disable all performance buttons
+            const buttons = document.querySelectorAll('button');
+            buttons.forEach(btn => {
+                if (btn.textContent.includes('10,000 Shapes')) {
+                    btn.disabled = true;
+                    btn.textContent = 'Adding 10,000 shapes (Batch ' + batchNumber + ')...';
+                }
+            });
+
+            const startTime = performance.now();
+            const shapeTypes = ['marker', 'polyline', 'polygon', 'circle', 'rectangle'];
+            const center = window.testMap.getCenter();
+
+            // Generate 10,000 random shapes
+            for (let i = 0; i < 10000; i++) {
+                const type = shapeTypes[i % shapeTypes.length];
+                const lat = center.lat() + (Math.random() - 0.5) * 0.1;
+                const lng = center.lng() + (Math.random() - 0.5) * 0.1;
+
+                if (type === 'marker') {
+                    new google.maps.Marker({
+                        position: { lat: lat, lng: lng },
+                        map: window.testMap,
+                        title: 'Performance Test Marker ' + i
+                    });
+                } else if (type === 'polyline') {
+                    new google.maps.Polyline({
+                        path: [
+                            { lat: lat, lng: lng },
+                            { lat: lat + 0.001, lng: lng + 0.001 }
+                        ],
+                        map: window.testMap,
+                        geodesic: true
+                    });
+                } else if (type === 'polygon') {
+                    new google.maps.Polygon({
+                        paths: [
+                            { lat: lat, lng: lng },
+                            { lat: lat + 0.001, lng: lng },
+                            { lat: lat + 0.001, lng: lng + 0.001 },
+                            { lat: lat, lng: lng + 0.001 }
+                        ],
+                        map: window.testMap
+                    });
+                } else if (type === 'circle') {
+                    new google.maps.Circle({
+                        center: { lat: lat, lng: lng },
+                        radius: 50,
+                        map: window.testMap
+                    });
+                } else if (type === 'rectangle') {
+                    new google.maps.Rectangle({
+                        bounds: {
+                            north: lat + 0.001,
+                            south: lat,
+                            east: lng + 0.001,
+                            west: lng
+                        },
+                        map: window.testMap
+                    });
+                }
+            }
+
+            const endTime = performance.now();
+            const timeMs = (endTime - startTime).toFixed(2);
+            const totalShapesAdded = batchNumber * shapesPerBatch;
+            const resultMsg = '✅ Batch #' + batchNumber + ': Added 10,000 shapes in ' + timeMs + 'ms | Total performance test shapes: ' + totalShapesAdded;
+
+            // Update all perfStatus elements
+            const perfStatus1 = document.getElementById('perfStatus1');
+            const perfStatus2 = document.getElementById('perfStatus2');
+            if (perfStatus1) perfStatus1.innerHTML = resultMsg;
+            if (perfStatus2) perfStatus2.innerHTML = resultMsg;
+
+            // Re-enable all performance buttons
+            buttons = document.querySelectorAll('button');
+            buttons.forEach(btn => {
+                if (btn.textContent.includes('10,000 Shapes')) {
+                    btn.disabled = false;
+                    btn.textContent = 'Add 10,000 Shapes';
+                }
+            });
+
+            log('Performance test: 10,000 shapes added in ' + timeMs + 'ms');
+        }
+
+        // Load saved API key on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const saved = localStorage.getItem('mcx-manual-test-key');
+            if (saved) {
+                document.getElementById('apiKey').value = saved;
+            }
+        });
+    </script>
+</body>
+</html>
