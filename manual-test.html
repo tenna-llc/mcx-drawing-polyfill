@@ -488,11 +488,12 @@
                     }
                     polygonPath.push(polygonPath[0]); // Close the shape
 
+                    const RED = '#e53935';
                     new google.maps.Polygon({
                         paths: polygonPath,
-                        strokeColor: BLUE,
+                        strokeColor: RED,
                         strokeWeight: 2,
-                        fillColor: BLUE,
+                        fillColor: RED,
                         fillOpacity: 0.35,
                         map: window.testMap
                     });
