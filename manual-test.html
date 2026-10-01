@@ -475,18 +475,25 @@
                         geodesic: true
                     });
                 } else if (type === 'polygon') {
+                    // Create polygon with 6-8 random points
+                    const numPoints = 6 + Math.floor(Math.random() * 3);
+                    const polygonPath = [];
+                    for (let p = 0; p < numPoints; p++) {
+                        const angle = (p / numPoints) * Math.PI * 2;
+                        const radius = 0.002;
+                        polygonPath.push({
+                            lat: lat + Math.cos(angle) * radius,
+                            lng: lng + Math.sin(angle) * radius
+                        });
+                    }
+                    polygonPath.push(polygonPath[0]); // Close the shape
+
                     new google.maps.Polygon({
-                        paths: [
-                            { lat: lat, lng: lng },
-                            { lat: lat + 0.001, lng: lng },
-                            { lat: lat + 0.001, lng: lng + 0.001 },
-                            { lat: lat, lng: lng + 0.001 },
-                            { lat: lat, lng: lng }
-                        ],
+                        paths: polygonPath,
                         strokeColor: BLUE,
                         strokeWeight: 2,
                         fillColor: BLUE,
-                        fillOpacity: 0.3,
+                        fillOpacity: 0.35,
                         map: window.testMap
                     });
                 } else if (type === 'circle') {
@@ -500,17 +507,18 @@
                         map: window.testMap
                     });
                 } else if (type === 'rectangle') {
+                    // Create larger rectangle (0.003 x 0.003 degrees)
                     new google.maps.Rectangle({
                         bounds: {
-                            north: lat + 0.001,
-                            south: lat,
-                            east: lng + 0.001,
-                            west: lng
+                            north: lat + 0.0015,
+                            south: lat - 0.0015,
+                            east: lng + 0.0015,
+                            west: lng - 0.0015
                         },
                         strokeColor: BLUE,
-                        strokeWeight: 2,
+                        strokeWeight: 3,
                         fillColor: BLUE,
-                        fillOpacity: 0.3,
+                        fillOpacity: 0.35,
                         map: window.testMap
                     });
                 }
