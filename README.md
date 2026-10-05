@@ -33,10 +33,10 @@ All styling options are **partial overrides** — supply only the fields you wan
 | `markerType` | markers | `'basic' \| 'advanced' \| 'auto'` (see above). |
 | `markerOptions` | completed markers | **Interpreted per resolved mode**: `MarkerOptions` in basic mode (e.g. `icon`, `label`), `AdvancedMarkerElementOptions` in advanced mode (e.g. `content` — an Element is cloned per marker — `gmpDraggable`). There is no translation layer. |
 | `polylineOptions` | completed polylines **and** the in-progress line | The active line's stroke colour/weight/opacity mirror these so preview matches result. |
-| `polygonOptions` | completed polygons | |
-| `circleOptions` | circles | Drawn shapes are promoted to `editable`/`draggable`/`clickable` on completion. |
+| `polygonOptions` | completed polygons **and** the in-progress outline | While drawing a polygon, the outline and the line to the cursor use these stroke values. |
+| `circleOptions` | circles | Applied to the finished shape. Unset values use Google's defaults (not editable/draggable, clickable). Like Google, finished circles, rectangles and polygons get `zIndex` 0, 1, 2… in drawing order unless you set one. |
 | `rectangleOptions` | rectangles | As above. |
-| `ghostlineOptions` | dotted preview line | `icons` supplies the repeating dot symbol(s). `clickable` and `zIndex` are **fixed internally** and cannot be overridden. |
+| `ghostlineOptions` | line from the last point to the cursor | Solid in the shape's stroke by default; pass `icons` for a dotted line (the solid stroke is then hidden unless you set `strokeOpacity`). `clickable` and `zIndex` are **fixed internally** and cannot be overridden. |
 | `finishingMarkerSVGOptions` | finishing node (both modes) | `fillColor`, `fillOpacity`, `strokeColor`, `strokeWeight`, `scale` — rendered as a Symbol in basic mode and as a generated SVG in advanced mode. |
 | `finishingMarkerSVG` | finishing node (advanced only) | Custom SVG markup; ignored (with a warning) in basic mode. Overrides `finishingMarkerSVGOptions`. |
 
