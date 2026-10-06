@@ -1,6 +1,6 @@
 ﻿/*!
  * MCX Drawing — Google Maps Drawing Manager Polyfill (Unified)
- * Version 2.0.0
+ * Version 2.0.0-tenna.1 (Tenna fork of 2.0.0)
  *
  * File: mcx-drawing-polyfill.js
  *
@@ -57,6 +57,35 @@
  * IMPORTANT: this file must be loaded AFTER the Google Maps JS API. Loading it
  *   first is now a hard error rather than a silent no-op.
  *
+ * ── Tenna fork changes (2.0.0-tenna.1) ───────────────────────────────────
+ *   - CHANGE: drawing modes use `gestureHandling` instead of the deprecated
+ *     `draggable` map option: 'none' for circle/rectangle, 'auto' otherwise.
+ *   - FIX: the map's gestureHandling and disableDoubleClickZoom are saved when
+ *     drawing starts and restored when it ends or the manager is detached; the
+ *     crosshair cursor is also cleared on detach.
+ *   - FIX: the circle/rectangle being dragged is never editable/draggable (its
+ *     handles stole the drag); circleOptions/rectangleOptions editable,
+ *     draggable and zIndex apply to the completed shape.
+ *   - FIX: a drag is also finished on pointerup/touchend off the map (only
+ *     when the drawing finger lifts, not a second finger), and a touchcancel
+ *     discards the half-drawn shape. Only the left mouse button starts a drag.
+ *   - FIX: while the circle/rectangle tool is active the map div gets
+ *     `touch-action: none` (restored afterwards) so a finger drag draws the
+ *     shape instead of scrolling the page.
+ *   - CHANGE: no built-in stroke/fill defaults for polyline, polygon, circle
+ *     and rectangle; unset values use Google's native shape defaults, as
+ *     Google's DrawingManager does. The in-progress outline and the line to
+ *     the cursor use the shape's own stroke (polygonOptions in polygon mode);
+ *     the line to the cursor is solid unless ghostlineOptions says otherwise.
+ *   - CHANGE: finished circles/rectangles follow Google's defaults when the
+ *     caller leaves them unset: not editable, not draggable. A caller's
+ *     clickable: false is kept after drawing (was forced to true).
+ *   - CHANGE: finished circles, rectangles and polygons get a running zIndex
+ *     (0, 1, 2, ... per manager, newest on top) like Google's DrawingManager,
+ *     unless the caller sets zIndex. Markers and polylines are left unset.
+ *   - CHANGE: only stand down when google.maps.drawing.DrawingManager exists,
+ *     not merely the google.maps.drawing namespace.
+ *
  * ── Changes in 2.0.0 ──────────────────────────────────────────────────────
  *   - FIX: completed overlays no longer swallow the first click after a tool is
  *     selected (they were left `clickable: true` and consumed the map click).
@@ -64,7 +93,7 @@
  *     reset on every mode change, so a tool picked within 150 ms of finishing a
  *     shape no longer drops its first click.
  *   - FIX: an initial `drawingMode` passed to the constructor now routes through
- *     setDrawingMode(), so cursor, toolbar state and map draggability are all
+ *     setDrawingMode(), so cursor, toolbar state and map gesture settings are all
  *     applied (previously a starting mode of 'circle'/'rectangle' left the map
  *     pannable and the drag-to-draw tools unusable).
  *   - FIX: hard failure when loaded before the Maps API instead of installing
@@ -118,12 +147,12 @@
     }
 
     // Guard: only inject if the native library is absent
-    if (window.google.maps.drawing)
+    if (window.google.maps.drawing && window.google.maps.drawing.DrawingManager)
     {
         return; // Native library present — do nothing
     }
 
-    var MCX_VERSION = '2.0.0';
+    var MCX_VERSION = '2.0.0-tenna.1';
 
     // Informational logging is opt-out per manager (`silent: true`) and can be
     // killed page-wide with window.mcxDrawingSilent. Warnings always print.
@@ -304,6 +333,8 @@
             // an existing shape is consumed by that shape and never reaches the
             // map listener, which reads to the user as "the click did nothing".
             this._completed = [];
+            this._callerClickable = new WeakMap(); // overlay -> clickable the caller asked for
+            this._zCounter = 0; // next zIndex for finished circles/rectangles/polygons
             this._suppressCompletedClicks = options.suppressCompletedClicks !== false;
 
             // In-progress drawing state
@@ -314,6 +345,10 @@
 
             this._ignoreMapClick = false; // Safety guard to prevent double-firing
             this._lastMapClickTime = 0;   // Timestamp of the last accepted vertex click
+
+            // Map settings preservation for drawing mode
+            this._savedMapSettings = null; // Stores original gestureHandling and disableDoubleClickZoom
+            this._savedTouchAction = '';   // Map div touch-action before drawing began
 
             // Drag-to-draw (circle / rectangle) state
             this._shapeDragging = false;
@@ -343,70 +378,38 @@
             // mode: MarkerOptions (basic) or AdvancedMarkerElementOptions (advanced).
             this._markerOptions = options.markerOptions || {};
 
-            this._polylineOptions = {
-                strokeColor: '#1a73e8',
-                strokeWeight: 3,
-                strokeOpacity: 0.9,
-                clickable: true
-            };
+            // No stroke/fill defaults: anything the caller leaves unset falls
+            // through to google.maps.Polyline/Polygon/Circle/Rectangle's own
+            // defaults, matching Google's DrawingManager.
+            this._polylineOptions = { clickable: true };
             if (options.polylineOptions)
             {
                 Object.assign(this._polylineOptions, options.polylineOptions);
             }
 
-            this._polygonOptions = {
-                strokeColor: '#1a73e8',
-                strokeWeight: 2,
-                strokeOpacity: 0.9,
-                fillColor: '#1a73e8',
-                fillOpacity: 0.25,
-                clickable: true
-            };
+            this._polygonOptions = { clickable: true };
             if (options.polygonOptions)
             {
                 Object.assign(this._polygonOptions, options.polygonOptions);
             }
 
-            this._circleOptions = {
-                strokeColor: '#1a73e8',
-                strokeWeight: 2,
-                strokeOpacity: 0.9,
-                fillColor: '#1a73e8',
-                fillOpacity: 0.2
-            };
+            this._circleOptions = {};
             if (options.circleOptions)
             {
                 Object.assign(this._circleOptions, options.circleOptions);
             }
 
-            this._rectangleOptions = {
-                strokeColor: '#1a73e8',
-                strokeWeight: 2,
-                strokeOpacity: 0.9,
-                fillColor: '#1a73e8',
-                fillOpacity: 0.2
-            };
+            this._rectangleOptions = {};
             if (options.rectangleOptions)
             {
                 Object.assign(this._rectangleOptions, options.rectangleOptions);
             }
 
-            // Dotted preview line styling. `clickable` and `zIndex` are fixed
-            // internally (documented) — everything else is overridable.
-            this._ghostlineOptions = {
-                strokeOpacity: 0, // The main solid stroke must be hidden for dots to work
-                icons: [{
-                    icon: {
-                        path: google.maps.SymbolPath.CIRCLE,
-                        fillColor: '#1a73e8',
-                        fillOpacity: 0.7,
-                        strokeOpacity: 0,
-                        scale: 2
-                    },
-                    offset: '0',
-                    repeat: '4px'
-                }]
-            };
+            // Preview line from the last vertex to the cursor. By default it is a
+            // solid line in the shape's own stroke, like Google's DrawingManager;
+            // ghostlineOptions (e.g. dotted `icons`) override that. `clickable`
+            // and `zIndex` are fixed internally.
+            this._ghostlineOptions = {};
             if (options.ghostlineOptions)
             {
                 Object.assign(this._ghostlineOptions, options.ghostlineOptions);
@@ -532,9 +535,54 @@
 
             if (this._map)
             {
-                // Circle/Rectangle are drag-to-draw, so panning must be off while active
-                this._map.setOptions({ draggable: !_isDragShapeMode(mode) });
+                var div = this._map.getDiv ? this._map.getDiv() : null;
+
+                if (mode)
+                {
+                    // Save original map settings when entering a drawing mode,
+                    // before anything below changes them
+                    if (!this._savedMapSettings)
+                    {
+                        // google.maps.Map has no getOptions(); read via MVCObject.get().
+                        // setOptions({x: undefined}) is ignored by Maps, so an unset
+                        // value is saved as the documented default to stay restorable.
+                        var gh = this._map.get('gestureHandling');
+                        var ddz = this._map.get('disableDoubleClickZoom');
+                        this._savedMapSettings = {
+                            gestureHandling: gh === undefined || gh === null ? 'auto' : gh,
+                            disableDoubleClickZoom: ddz === undefined || ddz === null ? false : ddz
+                        };
+                        this._savedTouchAction = div ? div.style.touchAction : '';
+                    }
+
+                    // With gestureHandling 'none' the map ignores touch gestures, so
+                    // the browser may scroll/zoom the page instead of letting the
+                    // finger draw. touch-action: none on the map div prevents that.
+                    if (div) div.style.touchAction = _isDragShapeMode(mode) ? 'none' : this._savedTouchAction;
+
+                    // Circle/Rectangle are drag-to-draw, so panning must be off while active
+                    this._map.setOptions({
+                        gestureHandling: _isDragShapeMode(mode) ? 'none' : 'auto',
+                        disableDoubleClickZoom: true
+                    });
+                } else
+                {
+                    this._restoreMapSettings();
+                }
             }
+        };
+
+        // Puts back the map settings and touch-action saved when drawing began.
+        DrawingManager.prototype._restoreMapSettings = function ()
+        {
+            if (!this._savedMapSettings) return;
+
+            this._map.setOptions(this._savedMapSettings);
+            var div = this._map.getDiv ? this._map.getDiv() : null;
+            if (div) div.style.touchAction = this._savedTouchAction;
+
+            this._savedMapSettings = null;
+            this._savedTouchAction = '';
         };
 
         // Partial option update, mirroring the native DrawingManager surface.
@@ -754,21 +802,48 @@
                 google.maps.event.addListener(map, 'mouseup', function (e) { self._shapeUp(e); })
             ];
 
-            // Safety net: finish the drag even if the mouse is released off the map
-            this._shapeDocUp = function () { if (self._shapeDragging) self._shapeUp(); };
-            document.addEventListener('mouseup', this._shapeDocUp);
+            // Safety net: finish the drag even if the pointer is released off the
+            // map. Touch input may not produce a compatibility mouseup, so listen
+            // for pointer/touch release too. A cancelled gesture (e.g. the OS took
+            // over the touch) discards the half-drawn shape instead of keeping it.
+            // Only the finger that started the drag ends it: a second finger
+            // lifting is a non-primary pointer and leaves other touches down.
+            this._docListeners = [
+                ['mouseup', function () { if (self._shapeDragging) self._shapeUp(); }],
+                ['pointerup', function (e)
+                {
+                    if (self._shapeDragging && e.isPrimary !== false) self._shapeUp();
+                }],
+                ['touchend', function (e)
+                {
+                    if (self._shapeDragging && !(e.touches && e.touches.length)) self._shapeUp();
+                }],
+                // Not pointercancel: browsers also fire it when they take a touch
+                // over for page scrolling, which would discard a live drag.
+                ['touchcancel', function () { if (self._shapeDragging) self._cancelShapeDraw(); }]
+            ];
+            this._docListeners.forEach(function (l) { document.addEventListener(l[0], l[1]); });
 
             this._updateCursor();
         };
 
         DrawingManager.prototype._detachFromMap = function ()
         {
-            if (this._shapeDocUp)
+            if (this._docListeners)
             {
-                document.removeEventListener('mouseup', this._shapeDocUp);
-                this._shapeDocUp = null;
+                this._docListeners.forEach(function (l) { document.removeEventListener(l[0], l[1]); });
+                this._docListeners = null;
             }
             this._cancelShapeDraw();
+
+            // Leave the map pannable with a normal cursor even if detached mid-draw
+            if (this._map)
+            {
+                this._restoreMapSettings();
+                this._map.setOptions({ draggableCursor: '' });
+                var div = this._map.getDiv ? this._map.getDiv() : null;
+                if (div) div.style.cursor = '';
+            }
 
             // Hand the completed overlays back in a usable state before letting go
             this._setCompletedClickable(true);
@@ -919,23 +994,31 @@
         {
             var map = this._map;
             var coords = this._coords;
-            var lineStyle = this._polylineOptions;
-
-            // The in-progress line takes its stroke from polylineOptions so the
-            // preview matches the finished polyline; joins/caps stay forced.
-            this._activeShape = new google.maps.Polyline({
+            // The in-progress line takes its stroke from the shape's options so
+            // the preview matches the finished shape; joins/caps stay forced.
+            this._activeShape = new google.maps.Polyline(Object.assign(this._shapeStroke(), {
                 path: coords,
                 map: map,
-                strokeColor: lineStyle.strokeColor,
-                strokeWeight: lineStyle.strokeWeight,
-                strokeOpacity: lineStyle.strokeOpacity,
                 // FIX: Force Google Maps SVG renderer to use round joints instead of square caps.
                 // This completely eliminates sharp overlapping corners/horns on acute angles.
                 strokeLineJoin: 'round',
                 strokeLineCap: 'round',
                 clickable: false,
                 zIndex: 200
+            }));
+        };
+
+        // Stroke keys the caller set for the current polygon/polyline; unset
+        // keys are omitted so Maps applies its own defaults.
+        DrawingManager.prototype._shapeStroke = function ()
+        {
+            var opts = this._currentMode === OverlayType.POLYGON ? this._polygonOptions : this._polylineOptions;
+            var stroke = {};
+            ['strokeColor', 'strokeWeight', 'strokeOpacity'].forEach(function (k)
+            {
+                if (opts[k] !== undefined) stroke[k] = opts[k];
             });
+            return stroke;
         };
 
         DrawingManager.prototype._updateActiveShape = function ()
@@ -979,9 +1062,12 @@
             // forces a full re-render. We now control the preview purely via its PATH.
             if (!this._ghostLine)
             {
-                // ghostlineOptions styling first; path/map/clickable/zIndex are
-                // fixed internally and always win (documented behaviour).
-                var options = Object.assign({}, this._ghostlineOptions, {
+                // Shape stroke, then ghostlineOptions; path/map/clickable/zIndex are
+                // fixed internally and always win (documented behaviour). Dot icons
+                // without an explicit strokeOpacity hide the solid stroke beneath.
+                var stroke = this._shapeStroke();
+                if (dotIcons.length && this._ghostlineOptions.strokeOpacity === undefined) stroke.strokeOpacity = 0;
+                var options = Object.assign(stroke, this._ghostlineOptions, {
                     path: [],
                     map: this._map,
                     icons: dotIcons,
@@ -1109,18 +1195,25 @@
             if (!_isDragShapeMode(mode)) return;
             if (!e || !e.latLng) return;
 
+            // Only the primary (left) button draws; touch reports button 0 or none
+            var button = e.domEvent ? e.domEvent.button : undefined;
+            if (button !== undefined && button !== 0) return;
+
             // Clean up any stray preview
             if (this._shapePreview) { this._shapePreview.setMap(null); this._shapePreview = null; }
 
             this._shapeDragging = true;
             this._shapeStart = e.latLng;
 
+            // The preview must not be editable/draggable: its resize handles sit
+            // under the pointer and would steal the drag. The caller's editable/
+            // draggable options are applied once the shape is complete.
             if (mode === OverlayType.CIRCLE)
             {
                 this._shapePreview = new google.maps.Circle(
                     Object.assign({}, this._circleOptions, {
                         center: e.latLng, radius: 0.5, map: this._map,
-                        clickable: false, zIndex: 200
+                        clickable: false, editable: false, draggable: false, zIndex: 200
                     }));
             }
             else // rectangle
@@ -1128,7 +1221,7 @@
                 this._shapePreview = new google.maps.Rectangle(
                     Object.assign({}, this._rectangleOptions, {
                         bounds: new google.maps.LatLngBounds(e.latLng, e.latLng), map: this._map,
-                        clickable: false, zIndex: 200
+                        clickable: false, editable: false, draggable: false, zIndex: 200
                     }));
             }
         };
@@ -1183,8 +1276,15 @@
                 return; // stay in the current tool so the user can retry
             }
 
-            // Promote the preview into the final, editable + draggable overlay
-            preview.setOptions({ editable: true, draggable: true, clickable: true });
+            // Promote the preview into the final overlay with the caller's options;
+            // unset ones take Google's defaults (not editable/draggable, clickable).
+            var shapeOpts = (mode === OverlayType.CIRCLE) ? this._circleOptions : this._rectangleOptions;
+            preview.setOptions({
+                editable: shapeOpts.editable === true,
+                draggable: shapeOpts.draggable === true,
+                clickable: shapeOpts.clickable !== false
+            });
+            preview.set('zIndex', this._nextZIndex(shapeOpts));
 
             this._trackCompleted(preview);
 
@@ -1273,7 +1373,8 @@
             {
                 options = Object.assign({}, this._polygonOptions, {
                     paths: [coords],
-                    map: this._map
+                    map: this._map,
+                    zIndex: this._nextZIndex(this._polygonOptions)
                 });
                 mockOverlay = new google.maps.Polygon(options);
                 this._trackCompleted(mockOverlay);
@@ -1300,10 +1401,21 @@
         // moments earlier — most visibly on narrow maps, where more of the
         // viewport is covered by what you just drew.
 
+        // Google numbers finished shapes 0, 1, 2, ... so the newest sits on top.
+        // A zIndex the caller set is kept and does not use up a number.
+        DrawingManager.prototype._nextZIndex = function (shapeOpts)
+        {
+            return shapeOpts.zIndex != null ? shapeOpts.zIndex : this._zCounter++;
+        };
+
         DrawingManager.prototype._trackCompleted = function (overlay)
         {
             if (!overlay) return;
             this._completed.push(overlay);
+
+            // Remember the caller's clickable so it is restored, not forced to true
+            var c = typeof overlay.get === 'function' ? overlay.get('clickable') : overlay.gmpClickable;
+            this._callerClickable.set(overlay, c !== false);
 
             // If a tool is still active (marker mode stays put between clicks),
             // the new overlay must not be able to eat the next click either.
@@ -1328,19 +1440,22 @@
             if (!this._completed.length) return;
 
             this._pruneCompleted();
+            var callerClickable = this._callerClickable;
 
             this._completed.forEach(function (o)
             {
+                // Restoring: put back what the caller asked for (default true)
+                var value = clickable ? callerClickable.get(o) !== false : false;
                 try
                 {
                     if (typeof o.setOptions === 'function')
                     {
                         // Polyline / Polygon / Circle / Rectangle / basic Marker
-                        o.setOptions({ clickable: clickable });
+                        o.setOptions({ clickable: value });
                     } else if ('gmpClickable' in o)
                     {
                         // AdvancedMarkerElement
-                        o.gmpClickable = clickable;
+                        o.gmpClickable = value;
                     }
                 } catch (err)
                 {
@@ -1359,19 +1474,12 @@
             if (this._currentMode)
             {
                 if (container) container.style.cursor = 'crosshair';
-                // Lock crosshairs and disable double click zooming while drawing
-                this._map.setOptions({
-                    draggableCursor: 'crosshair',
-                    disableDoubleClickZoom: true
-                });
+                // Cursor only; gesture/double-click settings are owned by setDrawingMode
+                this._map.setOptions({ draggableCursor: 'crosshair' });
             } else
             {
                 if (container) container.style.cursor = '';
-                // Restore map defaults
-                this._map.setOptions({
-                    draggableCursor: '',
-                    disableDoubleClickZoom: false
-                });
+                this._map.setOptions({ draggableCursor: '' });
             }
         };
 

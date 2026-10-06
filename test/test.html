@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>MCX Drawing Polyfill - Test Suite</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #1a73e8;
+            margin-bottom: 10px;
+        }
+        .info {
+            color: #666;
+            margin-bottom: 20px;
+        }
+        .test-output {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .pass {
+            color: #188038;
+        }
+        .fail {
+            color: #d33b27;
+        }
+        .summary {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+            font-weight: bold;
+        }
+        button {
+            background: #1a73e8;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        button:hover {
+            background: #1557b0;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div style="display: flex; gap: 20px;">
+        <div class="container" style="flex: 1;">
+            <h1>MCX Drawing Polyfill - Real Maps Test Suite</h1>
+            <p class="info">Integration tests with real Google Maps API (requires API key)</p>
+
+        <div class="controls">
+            <div style="margin-bottom: 15px;">
+                <label style="font-weight: 600;">Google Maps API Key:</label><br>
+                <input type="password" id="apiKey" placeholder="AIz..." style="width: 300px; padding: 8px; margin-top: 5px;">
+                <button onclick="saveApiKey()" style="margin-left: 10px;">Save Key</button>
+            </div>
+            <button onclick="runTests()">Run Tests</button>
+        </div>
+
+        <div id="status" style="padding: 10px; margin-bottom: 15px; border-radius: 4px; display: none;"></div>
+
+        <div id="output" class="test-output" style="display:none;">
+            <div id="log"></div>
+        </div>
+        </div>
+
+        <div style="flex: 1; min-width: 400px;">
+            <h2 style="margin-top: 0; text-align: center;">Live Map View</h2>
+            <div id="test-map" style="width: 100%; height: 600px; border: 1px solid #ddd; border-radius: 4px;"></div>
+            <p style="font-size: 12px; color: #666; text-align: center; margin-top: 10px;">All test shapes drawn here</p>
+        </div>
+    </div>
+
+    <!-- Google Maps API (loaded dynamically after user provides key) -->
+    <script id="maps-api"></script>
+
+    <script>
+        var logOutput = [];
+        var mapsApiLoaded = false;
+        var polyfillLoaded = false;
+        var testsLoaded = false;
+
+        // Load Google Maps API from localStorage
+        function loadGoogleMapsAPI()
+        {
+            var apiKey = localStorage.getItem('mcx-test-api-key');
+            if (!apiKey)
+            {
+                showStatus('❌ API key not saved. Enter your Google Maps API key and click "Save Key"', 'error');
+                return false;
+            }
+
+            var script = document.getElementById('maps-api');
+            // Pin a Maps version with test.html?v=3.65 (defaults to the weekly channel)
+            var requestedVersion = new URLSearchParams(location.search).get('v');
+            script.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(apiKey) +
+                (requestedVersion ? '&v=' + encodeURIComponent(requestedVersion) : '');
+
+            // Wait for API to load
+            return new Promise(function(resolve) {
+                script.onload = function() {
+                    mapsApiLoaded = true;
+                    showStatus('✅ Google Maps API ' + google.maps.version + ' loaded. Loading polyfill...', 'success');
+
+                    // Now load the polyfill and tests AFTER Maps API is ready
+                    loadPolyfillAndTests().then(function() {
+                        showStatus('✅ Polyfill and tests loaded. Ready to run.', 'success');
+                        resolve(true);
+                    }).catch(function(err) {
+                        showStatus('❌ Failed to load polyfill: ' + err, 'error');
+                        resolve(false);
+                    });
+                };
+
+                script.onerror = function() {
+                    showStatus('❌ Failed to load Google Maps API. Check your API key.', 'error');
+                    resolve(false);
+                };
+            });
+        }
+
+        // Load polyfill and test suite after Maps API is ready
+        function loadPolyfillAndTests()
+        {
+            return new Promise(function(resolve, reject) {
+                // Load polyfill
+                var polyfillScript = document.createElement('script');
+                polyfillScript.src = '../mcx-drawing-polyfill.js';
+                polyfillScript.onload = function() {
+                    polyfillLoaded = true;
+
+                    // Then load tests
+                    var testScript = document.createElement('script');
+                    testScript.src = 'test-mcx-drawing.js';
+                    testScript.onload = function() {
+                        testsLoaded = true;
+                        resolve();
+                    };
+                    testScript.onerror = function() {
+                        reject('Failed to load test suite');
+                    };
+                    document.head.appendChild(testScript);
+                };
+                polyfillScript.onerror = function() {
+                    reject('Failed to load polyfill');
+                };
+                document.head.appendChild(polyfillScript);
+            });
+        }
+
+        function saveApiKey()
+        {
+            var key = document.getElementById('apiKey').value.trim();
+            if (!key)
+            {
+                showStatus('❌ Please enter an API key', 'error');
+                return;
+            }
+            localStorage.setItem('mcx-test-api-key', key);
+            showStatus('✅ API key saved. Reload page or click "Run Tests" to load Google Maps.', 'success');
+            document.getElementById('apiKey').value = '';
+        }
+
+        function showStatus(message, type)
+        {
+            var statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = message;
+            statusDiv.style.display = 'block';
+            statusDiv.style.backgroundColor = type === 'error' ? '#ffebee' : '#e8f5e9';
+            statusDiv.style.color = type === 'error' ? '#c62828' : '#2e7d32';
+            statusDiv.style.border = '1px solid ' + (type === 'error' ? '#ef5350' : '#66bb6a');
+        }
+
+        // Override console methods to capture output
+        var originalLog = console.log;
+        var originalError = console.error;
+
+        console.log = function ()
+        {
+            var msg = Array.prototype.slice.call(arguments).join(' ');
+            logOutput.push(msg);
+            originalLog.apply(console, arguments);
+        };
+
+        console.error = function ()
+        {
+            var msg = Array.prototype.slice.call(arguments).join(' ');
+            logOutput.push('<span class="fail">' + msg + '</span>');
+            originalError.apply(console, arguments);
+        };
+
+        var testsRunning = false;
+        var testsRan = false;
+        var AUTORUN_KEY = 'mcx-test-autorun';
+
+        async function runTests()
+        {
+            if (testsRunning) return;
+
+            // Maps can only load once per page and the runner keeps its counts,
+            // so a repeat run reloads the page (keeping ?v=) and starts again.
+            if (testsRan)
+            {
+                try { sessionStorage.setItem(AUTORUN_KEY, '1'); } catch (e) { /* storage blocked */ }
+                location.reload();
+                return;
+            }
+            testsRunning = true;
+
+            // Load Google Maps API if not already loaded
+            if (!mapsApiLoaded)
+            {
+                showStatus('⏳ Loading Google Maps API...', 'success');
+                await loadGoogleMapsAPI();
+                if (!mapsApiLoaded)
+                {
+                    testsRunning = false;
+                    showStatus('❌ Failed to load Google Maps API', 'error');
+                    return;
+                }
+            }
+
+            var outputDiv = document.getElementById('output');
+            var logDiv = document.getElementById('log');
+            logOutput = [];
+
+            // Check if the polyfill is loaded
+            if (typeof google === 'undefined' || typeof google.maps === 'undefined' || typeof google.maps.drawing === 'undefined')
+            {
+                showStatus('❌ ERROR: MCX Drawing Polyfill not loaded', 'error');
+                logDiv.innerHTML = '<span class="fail">ERROR: MCX Drawing Polyfill not loaded. Make sure mcx-drawing-polyfill.js is loaded after Google Maps.</span>';
+                outputDiv.style.display = 'block';
+                testsRunning = false;
+                return;
+            }
+
+            outputDiv.style.display = 'block';
+            logDiv.innerHTML = 'Running tests with real Google Maps API...<br>';
+            showStatus('⏳ Running ' + MCXDrawingTestRunner.tests.length + ' test cases...', 'success');
+
+            // Run the tests
+            await MCXDrawingTestRunner.run();
+            testsRunning = false;
+            testsRan = true;
+
+            // Display the captured output
+            var html = '';
+            for (var i = 0; i < logOutput.length; i++)
+            {
+                var line = logOutput[i];
+                if (line.includes('✓ PASS'))
+                {
+                    html += '<span class="pass">' + line + '</span><br>';
+                } else if (line.includes('✗ FAIL'))
+                {
+                    html += '<span class="fail">' + line + '</span><br>';
+                } else if (line.includes('Error:') || line.includes('Stack:'))
+                {
+                    html += '<span class="fail">  ' + line + '</span><br>';
+                } else
+                {
+                    html += line + '<br>';
+                }
+            }
+            logDiv.innerHTML = html;
+
+            // Show final status
+            if (MCXDrawingTestRunner.failed === 0)
+            {
+                showStatus('✅ All ' + MCXDrawingTestRunner.passed + ' tests passed on Maps ' + google.maps.version, 'success');
+            } else
+            {
+                showStatus('❌ ' + MCXDrawingTestRunner.failed + ' test(s) failed on Maps ' + google.maps.version, 'error');
+            }
+        }
+
+        // On page load, restore API key if exists
+        window.addEventListener('DOMContentLoaded', function() {
+            var savedKey = localStorage.getItem('mcx-test-api-key');
+            if (savedKey)
+            {
+                showStatus('✅ API key found in localStorage. Click "Run Tests" to start.', 'success');
+            }
+
+            var autorun = false;
+            try
+            {
+                autorun = sessionStorage.getItem(AUTORUN_KEY) === '1';
+                sessionStorage.removeItem(AUTORUN_KEY);
+            } catch (e) { /* storage blocked */ }
+            if (autorun && savedKey) runTests();
+        });
+    </script>
+</body>
+</html>
