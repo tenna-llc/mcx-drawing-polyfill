@@ -780,7 +780,7 @@
 
     TestRunner.test('Polyfill reports the Tenna fork version', function ()
     {
-        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.2', 'MCX_VERSION.');
+        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.3', 'MCX_VERSION.');
     });
 
     // ── Shape options applied to the finished overlay ──
@@ -1023,6 +1023,164 @@
 
         t.manager.setDrawingMode(null);
         assertTrue(circle.get('clickable') === true, 'Existing shapes should be clickable again after drawing');
+        cleanupMap(map);
+    });
+
+    function hostShapes(map)
+    {
+        return [
+            new google.maps.Polygon({ map: map, paths: [[ll(37.77, -122.42), ll(37.78, -122.42), ll(37.78, -122.41)]] }),
+            new google.maps.Polyline({ map: map, path: [ll(37.77, -122.40), ll(37.78, -122.40)] }),
+            new google.maps.Circle({ map: map, center: ll(37.76, -122.40), radius: 100 }),
+            new google.maps.Rectangle({ map: map, bounds: new google.maps.LatLngBounds(ll(37.75, -122.43), ll(37.76, -122.42)) })
+        ];
+    }
+
+    TestRunner.test('Shapes the host app drew are not clickable while a tool is active, and restored after', function ()
+    {
+        var map = createRealMap();
+        var shapes = hostShapes(map);
+        var t = managerWithOptions(map, {});
+
+        t.manager.setDrawingMode('circle');
+        shapes.forEach(function (sh) { assertTrue(sh.get('clickable') === false, 'Host shape should be inert while drawing'); });
+
+        t.manager.setDrawingMode(null);
+        shapes.forEach(function (sh) { assertTrue(sh.get('clickable') === true, 'Host shape should be clickable again'); });
+        cleanupMap(map);
+    });
+
+    TestRunner.test('A host shape created while a tool is active is inert, then restored', function ()
+    {
+        var map = createRealMap();
+        var t = managerWithOptions(map, {});
+
+        t.manager.setDrawingMode('polygon');
+        var late = new google.maps.Circle({ map: map, center: ll(37.76, -122.40), radius: 100 });
+        assertTrue(late.get('clickable') === false, 'Shape made mid-draw should be inert');
+
+        t.manager.setDrawingMode(null);
+        assertTrue(late.get('clickable') === true, 'Shape made mid-draw should be restored');
+        cleanupMap(map);
+    });
+
+    TestRunner.test('Host shapes with clickable: false stay non-clickable', function ()
+    {
+        var map = createRealMap();
+        var quiet = new google.maps.Circle({ map: map, clickable: false, center: ll(37.76, -122.40), radius: 100 });
+        var t = managerWithOptions(map, {});
+
+        t.manager.setDrawingMode('circle');
+        t.manager.setDrawingMode(null);
+        assertTrue(quiet.get('clickable') === false, 'Caller clickable:false must be kept');
+        cleanupMap(map);
+    });
+
+    TestRunner.test('suppressCompletedClicks: false leaves host shapes clickable', function ()
+    {
+        var map = createRealMap();
+        var shapes = hostShapes(map);
+        var t = managerWithOptions(map, { suppressCompletedClicks: false });
+
+        t.manager.setDrawingMode('circle');
+        // An untouched shape reports clickable as undefined; only false means inert.
+        shapes.forEach(function (sh) { assertTrue(sh.get('clickable') !== false, 'Host shape should stay clickable'); });
+        cleanupMap(map);
+    });
+
+    TestRunner.test('Detaching the manager mid-draw restores host shapes', function ()
+    {
+        var map = createRealMap();
+        var shapes = hostShapes(map);
+        var t = managerWithOptions(map, {});
+
+        t.manager.setDrawingMode('rectangle');
+        t.manager.setMap(null);
+        shapes.forEach(function (sh) { assertTrue(sh.get('clickable') === true, 'Host shape should be restored on detach'); });
+        cleanupMap(map);
+    });
+
+    TestRunner.test('Shapes drawn by the manager still pass instanceof and are restored after drawing', function ()
+    {
+        var map = createRealMap();
+        var t = managerWithOptions(map, {});
+
+        t.manager.setDrawingMode('circle');
+        dragOnMap(map, ll(37.77, -122.42), ll(37.775, -122.42));
+        var circle = assertSingleOverlay(t.events, 'circle', google.maps.Circle);
+
+        t.manager.setDrawingMode(null);
+        assertTrue(circle.get('clickable') === true, 'Finished circle should be clickable once drawing ends');
+        cleanupMap(map);
+    });
+
+    TestRunner.test('A clickable value the host sets mid-draw is the one restored', function ()
+    {
+        var map = createRealMap();
+        var shapes = hostShapes(map);
+        var t = managerWithOptions(map, {});
+
+        t.manager.setDrawingMode('polygon');
+        shapes[0].setOptions({ clickable: false });
+        shapes[1].setOptions({ clickable: true });
+        assertTrue(shapes[1].get('clickable') === false, 'Shape set clickable mid-draw should stay inert');
+
+        t.manager.setDrawingMode(null);
+        assertTrue(shapes[0].get('clickable') === false, 'Host clickable:false mid-draw must be kept');
+        assertTrue(shapes[1].get('clickable') === true, 'Host clickable:true mid-draw should be restored');
+        cleanupMap(map);
+    });
+
+    TestRunner.test('Host shapes stay inert until every manager on the map stops drawing', function ()
+    {
+        var map = createRealMap();
+        var shapes = hostShapes(map);
+        var a = managerWithOptions(map, {});
+        var b = managerWithOptions(map, {});
+
+        a.manager.setDrawingMode('circle');
+        b.manager.setDrawingMode('polygon');
+        a.manager.setDrawingMode(null);
+        shapes.forEach(function (sh) { assertTrue(sh.get('clickable') === false, 'Shape should stay inert while another manager draws'); });
+
+        b.manager.setDrawingMode(null);
+        shapes.forEach(function (sh) { assertTrue(sh.get('clickable') === true, 'Shape should be restored once both stop'); });
+        cleanupMap(map);
+    });
+
+    TestRunner.test('Subclasses of the shape constructors are tracked and keep instanceof', function ()
+    {
+        var map = createRealMap();
+        class Fence extends google.maps.Polygon
+        {
+            label() { return 'fence'; }
+        }
+        var fence = new Fence({ map: map, paths: [[ll(37.77, -122.42), ll(37.78, -122.42), ll(37.78, -122.41)]] });
+        assertTrue(fence instanceof Fence && fence instanceof google.maps.Polygon, 'instanceof should hold');
+        assertEqual(fence.label(), 'fence', 'Subclass methods should work.');
+
+        var t = managerWithOptions(map, {});
+        t.manager.setDrawingMode('rectangle');
+        assertTrue(fence.get('clickable') === false, 'Subclass instance should be inert while drawing');
+        t.manager.setDrawingMode(null);
+        assertTrue(fence.get('clickable') === true, 'Subclass instance should be restored');
+        cleanupMap(map);
+    });
+
+    TestRunner.test('The map div carries mcx-tool-active only while a tool is active', function ()
+    {
+        var map = createRealMap();
+        var t = managerWithOptions(map, {});
+        var div = map.getDiv();
+
+        t.manager.setDrawingMode('marker');
+        assertTrue(div.classList.contains('mcx-tool-active'), 'Class should be set while drawing');
+        t.manager.setDrawingMode(null);
+        assertTrue(!div.classList.contains('mcx-tool-active'), 'Class should clear when the tool is off');
+
+        t.manager.setDrawingMode('polygon');
+        t.manager.setMap(null);
+        assertTrue(!div.classList.contains('mcx-tool-active'), 'Class should clear on detach');
         cleanupMap(map);
     });
 
