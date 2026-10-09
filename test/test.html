@@ -163,6 +163,22 @@
             <button id="pgClear" disabled>Clear shapes</button>
         </div>
 
+        <!-- TS-44308: shapes the app drew itself, like saved geofences -->
+        <div class="custom-tools" id="hostTools">
+            <strong style="font-size: 13px;">Existing shapes:</strong>
+            <button id="pgAddFences" disabled>Add geofences</button>
+            <button id="pgAddQuiet" disabled>Add non-clickable shape</button>
+            <button id="pgRemoveFences" disabled>Remove existing shapes</button>
+        </div>
+        <p class="info" style="font-size: 13px;">
+            Existing shapes are created with <code>new google.maps.Polygon/Circle/Rectangle/Polyline</code>,
+            are clickable and open an info window, the way fe-geofences draws saved geofences.
+            With a tool selected, hovering one should show the crosshair and a click should log
+            <em>map click</em>, not <em>geofence click</em>. With Pan selected they should show the hand and
+            open their info window again. Add geofences while a tool is active to check shapes created mid-draw.
+            The grey shape is non-clickable on purpose and must stay that way.
+        </p>
+
         <div id="playground-map" style="width: 100%; height: 500px; border: 1px solid #ddd; border-radius: 4px;"></div>
         <p style="font-size: 13px; font-weight: 600; margin: 10px 0 4px;">Events</p>
         <div id="playground-log"></div>
@@ -387,7 +403,7 @@
         }
 
         // ── Manual playground ──────────────────────────────
-        var playground = null; // { map, manager, overlays }
+        var playground = null; // { map, manager, overlays, fences, infoWindow }
 
         async function openPlayground()
         {
@@ -415,7 +431,7 @@
                     drawingModes: ['marker', 'polyline', 'polygon', 'circle', 'rectangle']
                 }
             });
-            playground = { map: map, manager: manager, overlays: [] };
+            playground = { map: map, manager: manager, overlays: [], fences: [], infoWindow: new google.maps.InfoWindow() };
             applyPlaygroundStyle();
 
             // There is no drawingmode_changed event, so keep the custom buttons in
@@ -455,9 +471,76 @@
                 playgroundLog('cleared shapes');
             });
 
-            document.querySelectorAll('#customTools button, #customTools input').forEach(function (el) { el.disabled = false; });
+            // Only a click the shapes let through reaches the map
+            map.addListener('click', function (e)
+            {
+                playgroundLog('map click at ' + e.latLng.lat().toFixed(4) + ', ' + e.latLng.lng().toFixed(4));
+            });
+            document.getElementById('pgAddFences').addEventListener('click', addPlaygroundFences);
+            document.getElementById('pgAddQuiet').addEventListener('click', function ()
+            {
+                var c = map.getCenter();
+                var quiet = new google.maps.Circle({
+                    map: map, clickable: false, center: { lat: c.lat() - 0.012, lng: c.lng() + 0.02 }, radius: 500,
+                    strokeColor: '#777', fillColor: '#777', fillOpacity: 0.3
+                });
+                // Maps sends no click to a non-clickable shape, so this only logs if it became clickable
+                quiet.addListener('click', function ()
+                {
+                    playgroundLog('non-clickable shape click: should never happen');
+                });
+                playground.fences.push(quiet);
+                playgroundLog('added non-clickable shape');
+            });
+            document.getElementById('pgRemoveFences').addEventListener('click', function ()
+            {
+                playground.fences.forEach(function (f) { f.setMap(null); });
+                playground.fences = [];
+                playground.infoWindow.close();
+                playgroundLog('removed existing shapes');
+            });
+
+            document.querySelectorAll('#customTools button, #customTools input, #hostTools button').forEach(function (el) { el.disabled = false; });
             syncCustomTools();
             playgroundLog('playground ready (Maps ' + google.maps.version + ', MCX ' + google.maps.drawing.MCX_VERSION + ')');
+        }
+
+        // Clickable shapes made the way the host app makes its geofences, placed
+        // around the current centre with a small offset per batch
+        function addPlaygroundFences()
+        {
+            var map = playground.map;
+            var c = map.getCenter();
+            var o = (playground.fences.length / 4) * 0.004;
+            var lat = c.lat() + o, lng = c.lng() + o;
+            var style = { map: map, strokeColor: '#1e8e3e', strokeWeight: 2, fillColor: '#1e8e3e', fillOpacity: 0.2 };
+            var fences = [
+                ['polygon', new google.maps.Polygon(Object.assign({
+                    paths: [{ lat: lat + 0.004, lng: lng - 0.03 }, { lat: lat + 0.016, lng: lng - 0.02 }, { lat: lat + 0.002, lng: lng - 0.01 }]
+                }, style))],
+                ['circle', new google.maps.Circle(Object.assign({ center: { lat: lat - 0.008, lng: lng - 0.02 }, radius: 600 }, style))],
+                ['rectangle', new google.maps.Rectangle(Object.assign({
+                    bounds: { south: lat - 0.004, west: lng + 0.005, north: lat + 0.008, east: lng + 0.025 }
+                }, style))],
+                ['polyline', new google.maps.Polyline({
+                    map: map, strokeColor: '#1e8e3e', strokeWeight: 6,
+                    path: [{ lat: lat + 0.014, lng: lng + 0.005 }, { lat: lat + 0.02, lng: lng + 0.03 }]
+                })]
+            ];
+            fences.forEach(function (f)
+            {
+                var name = f[0], shape = f[1];
+                shape.addListener('click', function (e)
+                {
+                    playgroundLog('geofence click: ' + name);
+                    playground.infoWindow.setContent('Existing ' + name);
+                    playground.infoWindow.setPosition(e.latLng);
+                    playground.infoWindow.open(map);
+                });
+                playground.fences.push(shape);
+            });
+            playgroundLog('added existing shapes (polygon, circle, rectangle, polyline)' +
+                (playground.manager.getDrawingMode() ? ' while ' + playground.manager.getDrawingMode() + ' is active' : ''));
         }
 
         // Custom styling, applied to shapes drawn from now on

@@ -39,6 +39,7 @@ All styling options are **partial overrides** — supply only the fields you wan
 | `ghostlineOptions` | line from the last point to the cursor | Solid in the shape's stroke by default; pass `icons` for a dotted line (the solid stroke is then hidden unless you set `strokeOpacity`). `clickable` and `zIndex` are **fixed internally** and cannot be overridden. |
 | `finishingMarkerSVGOptions` | finishing node (both modes) | `fillColor`, `fillOpacity`, `strokeColor`, `strokeWeight`, `scale` — rendered as a Symbol in basic mode and as a generated SVG in advanced mode. |
 | `finishingMarkerSVG` | finishing node (advanced only) | Custom SVG markup; ignored (with a warning) in basic mode. Overrides `finishingMarkerSVGOptions`. |
+| `suppressCompletedClicks` | existing shapes | Default `true`. While a tool is active, shapes this manager finished, and shapes your app drew, are made non-clickable so they cannot swallow a drawing click (restored afterwards). `false` opts out. |
 
 ### Helpers
 
@@ -108,6 +109,18 @@ Because Google is only deprecating the *interaction layer* (the Drawing Manager)
 This polyfill hijacks the `window.google.maps.drawing` namespace. It tracks native map `click` and `mousemove` events to render temporary "ghost lines" and shapes, and then outputs standard Google Maps Overlay objects when the shape is completed. 
 
 *(Note: This polyfill handles the **creation** of shapes. For post-creation node editing, simply use the native `editable: true` property on standard Google Polylines/Polygons).*
+
+### Existing shapes while a tool is active *(2.0.0-tenna.3)*
+
+Shapes your app has already drawn (geofences, for example) are normally clickable, so Maps shows a hand cursor over them and they take clicks that were meant for drawing. While a drawing tool is selected, the polyfill keeps the crosshair over them and lets the click through to the map, as Google's DrawingManager does.
+
+* Polygons, polylines, circles and rectangles created **after this file loads** are tracked (by weak reference, so they can still be garbage collected) and made non-clickable while a tool is active. They are put back when the tool is switched off or the manager is detached.
+* A shape your app set to `clickable: false` is left as it is, and shapes on another map are not touched.
+* If your app changes a shape's `clickable` while a tool is active, the shape stays inert until the tool is off and then gets your value. With two managers on one map, shapes stay inert until both have switched their tool off.
+* Shapes created **before** this file loads cannot be tracked. A stylesheet rule keeps the crosshair over them, but a click on such a shape can still reach it. Load this file before your app creates its shapes to avoid that.
+* To do this, the `google.maps.Polygon`, `Polyline`, `Circle` and `Rectangle` constructors are wrapped. `instanceof` and subclassing keep working. Classes taken from `google.maps.importLibrary('maps')` are not wrapped, so shapes built from them are not tracked; use the `google.maps.*` constructors instead.
+* Info windows and form fields inside the map keep their own cursor.
+* Set `suppressCompletedClicks: false` to turn this off.
 
 ## 📦 How to Integrate
 

@@ -1,6 +1,6 @@
 ﻿/*!
  * MCX Drawing — Google Maps Drawing Manager Polyfill (Unified)
- * Version 2.0.0-tenna.2 (Tenna fork of 2.0.0)
+ * Version 2.0.0-tenna.3 (Tenna fork of 2.0.0)
  *
  * File: mcx-drawing-polyfill.js
  *
@@ -56,6 +56,17 @@
  *
  * IMPORTANT: this file must be loaded AFTER the Google Maps JS API. Loading it
  *   first is now a hard error rather than a silent no-op.
+ *
+ * ── Tenna fork changes (2.0.0-tenna.3) ───────────────────────────────────
+ *   - FIX: shapes the host app drew can no longer show a hand cursor (or take a
+ *     click) while a drawing tool is active. Polygons, polylines, circles and
+ *     rectangles created after this file loads are tracked and made
+ *     non-clickable until the tool is switched off (suppressCompletedClicks:
+ *     false opts out); a stylesheet rule keeps the crosshair over shapes that
+ *     existed earlier. The google.maps shape constructors are wrapped for this;
+ *     instanceof and subclassing keep working. A clickable value the host sets
+ *     mid-draw is what gets restored, and a second manager still drawing on
+ *     the same map keeps the shapes inert.
  *
  * ── Tenna fork changes (2.0.0-tenna.2) ───────────────────────────────────
  *   - CHANGE: like Google's DrawingManager, selecting a tool leaves the map's
@@ -163,7 +174,7 @@
         return; // Native library present — do nothing
     }
 
-    var MCX_VERSION = '2.0.0-tenna.2';
+    var MCX_VERSION = '2.0.0-tenna.3';
 
     // Informational logging is opt-out per manager (`silent: true`) and can be
     // killed page-wide with window.mcxDrawingSilent. Warnings always print.
@@ -216,6 +227,10 @@
         '  box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);',
         '}',
         '.mcx-draw-btn svg { pointer-events: none; }',
+        // Info windows and form fields keep their own pointer behaviour and cursor.
+        '.mcx-tool-active svg path:not(gmp-advanced-marker *):not(.gm-style-iw-c *) { pointer-events: none !important; }',
+        '.mcx-tool-active, .mcx-tool-active *:not(button):not(button *):not(a):not(img):not(input):not(textarea):not(select)' +
+            ':not(gmp-advanced-marker):not(gmp-advanced-marker *):not(.gm-style-iw-c):not(.gm-style-iw-c *) { cursor: crosshair !important; }',
     ].join('\n');
 
     var _stylesInjected = false;
@@ -325,6 +340,86 @@
         }
     };
 
+    // ── Host shape tracking ────────────────────────────────
+    //
+    // Shapes the host app drew earlier (saved geofences, ...) are clickable, so
+    // Maps shows the hand cursor over them and they eat drawing clicks. Google's
+    // DrawingManager keeps the crosshair over them. To match, remember every
+    // Polygon/Polyline/Circle/Rectangle created after this file loads (weakly,
+    // so they can still be garbage collected) and make them inert while a tool
+    // is active. The manager itself builds shapes from the untracked _N classes.
+    var _N = {
+        Polygon: google.maps.Polygon,
+        Polyline: google.maps.Polyline,
+        Circle: google.maps.Circle,
+        Rectangle: google.maps.Rectangle
+    };
+    var _shapeRefs = [];
+    var _pruneAt = 2000;
+    var _suppressors = [];
+
+    // A class missing when this file loaded (async bootstrap loader) was never
+    // wrapped, so the live google.maps one is the untracked original.
+    function _shapeClass(name)
+    {
+        return _N[name] || google.maps[name];
+    }
+
+    function _rememberShape(shape)
+    {
+        _shapeRefs.push(new WeakRef(shape));
+        // Apps that redraw thousands of geofences would otherwise grow this list
+        // without bound between tool selections: drop dead references now and then.
+        if (_shapeRefs.length > _pruneAt) _pruneAt = Math.max(2000, _liveShapes().length * 2);
+        _suppressors.forEach(function (m) { m._suppressForeignShape(shape); });
+    }
+
+    function _liveShapes()
+    {
+        var live = [];
+        _shapeRefs = _shapeRefs.filter(function (ref)
+        {
+            var shape = ref.deref();
+            if (shape) live.push(shape);
+            return !!shape;
+        });
+        return live;
+    }
+
+    function _installShapeTracking()
+    {
+        if (typeof WeakRef !== 'function' || typeof Reflect === 'undefined') return;
+
+        Object.keys(_N).forEach(function (name)
+        {
+            var Orig = _N[name];
+            if (typeof Orig !== 'function') return;
+
+            function Tracked()
+            {
+                // `class X extends google.maps.Polygon` calls this with `this`
+                // already inheriting from X; build the instance as an X too.
+                var nt = (this instanceof Orig && this.constructor !== Tracked) ? this.constructor : Orig;
+                var shape = Reflect.construct(Orig, arguments, nt);
+                _rememberShape(shape);
+                return shape;
+            }
+            // Same prototype, so `x instanceof google.maps.Polygon` holds for
+            // tracked and untracked instances alike.
+            Tracked.prototype = Orig.prototype;
+            Object.setPrototypeOf(Tracked, Orig);
+
+            try
+            {
+                google.maps[name] = Tracked;
+            } catch (err)
+            {
+                console.warn('[MCX] Could not track google.maps.' + name + '; existing shapes will keep their hand cursor while drawing.');
+            }
+        });
+    }
+    _installShapeTracking();
+
     // ── DrawingManager Class ───────────────────────────────
 
     var DrawingManager = (function ()
@@ -349,6 +444,7 @@
             // map listener, which reads to the user as "the click did nothing".
             this._completed = [];
             this._callerClickable = new WeakMap(); // overlay -> clickable the caller asked for
+            this._foreignSuppressed = new Map(); // host shapes made inert while a tool is active
             this._zCounter = 0; // next zIndex for finished circles/rectangles/polygons
             this._suppressCompletedClicks = options.suppressCompletedClicks !== false;
 
@@ -547,10 +643,15 @@
             // landing on one is consumed by that overlay and never reaches the
             // map's click listener. Make them inert while a tool is active.
             this._setCompletedClickable(!mode);
+            this._setForeignClickable(!mode);
 
             if (this._map)
             {
                 var div = this._map.getDiv ? this._map.getDiv() : null;
+
+                // Shapes drawn before this file loaded can't be tracked; this class
+                // lets the stylesheet keep the crosshair over them instead.
+                if (div) div.classList.toggle('mcx-tool-active', !!mode);
 
                 if (mode)
                 {
@@ -824,6 +925,7 @@
         {
             var map = this._map;
             var self = this;
+            _injectStyles();
 
             this._listeners = [
                 google.maps.event.addListener(map, 'click', self._onMapClick),
@@ -870,9 +972,12 @@
             if (this._map)
             {
                 this._restoreMapSettings();
+                var div = this._map.getDiv ? this._map.getDiv() : null;
+                if (div) div.classList.remove('mcx-tool-active');
             }
 
             // Hand the completed overlays back in a usable state before letting go
+            this._setForeignClickable(true);
             this._setCompletedClickable(true);
             this._completed = [];
 
@@ -1023,7 +1128,7 @@
             var coords = this._coords;
             // The in-progress line takes its stroke from the shape's options so
             // the preview matches the finished shape; joins/caps stay forced.
-            this._activeShape = new google.maps.Polyline(Object.assign(this._shapeStroke(), {
+            this._activeShape = new (_shapeClass('Polyline'))(Object.assign(this._shapeStroke(), {
                 path: coords,
                 map: map,
                 // FIX: Force Google Maps SVG renderer to use round joints instead of square caps.
@@ -1101,7 +1206,7 @@
                     clickable: false,
                     zIndex: 201
                 });
-                this._ghostLine = new google.maps.Polyline(options);
+                this._ghostLine = new (_shapeClass('Polyline'))(options);
             }
 
             // If the cursor sits exactly on the last node the segment is zero-length,
@@ -1238,7 +1343,7 @@
             // draggable options are applied once the shape is complete.
             if (mode === OverlayType.CIRCLE)
             {
-                this._shapePreview = new google.maps.Circle(
+                this._shapePreview = new (_shapeClass('Circle'))(
                     Object.assign({}, this._circleOptions, {
                         center: e.latLng, radius: 0.5, map: this._map,
                         clickable: false, editable: false, draggable: false, zIndex: 200
@@ -1246,7 +1351,7 @@
             }
             else // rectangle
             {
-                this._shapePreview = new google.maps.Rectangle(
+                this._shapePreview = new (_shapeClass('Rectangle'))(
                     Object.assign({}, this._rectangleOptions, {
                         bounds: new google.maps.LatLngBounds(e.latLng, e.latLng), map: this._map,
                         clickable: false, editable: false, draggable: false, zIndex: 200
@@ -1412,7 +1517,7 @@
                     path: coords,
                     map: this._map
                 });
-                mockOverlay = new google.maps.Polyline(options);
+                mockOverlay = new (_shapeClass('Polyline'))(options);
                 this._trackCompleted(mockOverlay);
 
                 google.maps.event.trigger(self, 'overlaycomplete', {
@@ -1428,7 +1533,7 @@
                     map: this._map,
                     zIndex: this._nextZIndex(this._polygonOptions)
                 });
-                mockOverlay = new google.maps.Polygon(options);
+                mockOverlay = new (_shapeClass('Polygon'))(options);
                 this._trackCompleted(mockOverlay);
 
                 google.maps.event.trigger(self, 'overlaycomplete', {
@@ -1514,6 +1619,72 @@
                     /* An overlay may have been torn down by the consumer — ignore. */
                 }
             });
+        };
+
+        // Makes the host app's shapes on this map inert (or gives them back).
+        // Restoring ignores the suppressCompletedClicks option so a shape can
+        // never be left stuck non-clickable.
+        DrawingManager.prototype._setForeignClickable = function (clickable)
+        {
+            var self = this;
+            var at = _suppressors.indexOf(this);
+
+            if (clickable)
+            {
+                if (at !== -1) _suppressors.splice(at, 1);
+                this._foreignSuppressed.forEach(function (entry, shape)
+                {
+                    // Another manager still drawing on this map keeps the shape inert
+                    var heir = null;
+                    try
+                    {
+                        var map = shape.getMap();
+                        heir = _suppressors.find(function (m) { return m._map === map; }) || null;
+                    } catch (err) { /* torn down by host */ }
+
+                    if (heir && !heir._foreignSuppressed.has(shape))
+                    {
+                        heir._foreignSuppressed.set(shape, entry);
+                        return;
+                    }
+                    google.maps.event.removeListener(entry.listener);
+                    try
+                    {
+                        if (entry.original) shape.setOptions({ clickable: true });
+                    } catch (err) { /* torn down by host */ }
+                });
+                this._foreignSuppressed.clear();
+                return;
+            }
+
+            if (!this._suppressCompletedClicks || !this._map) return;
+            if (at === -1) _suppressors.push(this);
+            _liveShapes().forEach(function (shape) { self._suppressForeignShape(shape); });
+        };
+
+        DrawingManager.prototype._suppressForeignShape = function (shape)
+        {
+            if (!this._currentMode || !this._suppressCompletedClicks) return;
+            if (this._foreignSuppressed.has(shape) || this._completed.indexOf(shape) !== -1) return;
+            if (shape.getMap() !== this._map) return;
+            if (shape.get('clickable') === false) return; // already inert: leave the caller's choice alone
+
+            // If the host changes clickable mid-draw, that becomes the value to
+            // restore; the shape itself stays inert until the tool is off.
+            var entry = { original: true, busy: false, listener: null };
+            function inert()
+            {
+                entry.busy = true;
+                try { shape.setOptions({ clickable: false }); } finally { entry.busy = false; }
+            }
+            entry.listener = google.maps.event.addListener(shape, 'clickable_changed', function ()
+            {
+                if (entry.busy) return;
+                entry.original = shape.get('clickable') !== false;
+                if (entry.original) inert();
+            });
+            this._foreignSuppressed.set(shape, entry);
+            inert();
         };
 
         // ── Cursor & state helpers ─────────────────────────
