@@ -632,6 +632,34 @@
         cleanupMap(map);
     });
 
+    TestRunner.test('A second finger pressing and lifting (map events) neither restarts nor finishes a circle or rectangle drag', function ()
+    {
+        ['circle', 'rectangle'].forEach(function (mode)
+        {
+            var map = createRealMap();
+            var t = newManager(map);
+            var finger1 = { button: 0, isPrimary: true, pointerId: 1, pointerType: 'touch' };
+            var finger2 = { button: 0, isPrimary: false, pointerId: 2, pointerType: 'touch' };
+
+            t.manager.setDrawingMode(mode);
+            google.maps.event.trigger(map, 'mousedown', { latLng: ll(37.77, -122.42), domEvent: finger1 });
+            var start = t.manager._shapeStart;
+
+            google.maps.event.trigger(map, 'mousedown', { latLng: ll(37.80, -122.40), domEvent: finger2 });
+            assertTrue(t.manager._shapeStart === start, mode + ': a second finger pressing must not restart the drag.');
+
+            google.maps.event.trigger(map, 'mouseup', { latLng: ll(37.80, -122.40), domEvent: finger2 });
+            google.maps.event.trigger(map, 'mouseup', { latLng: ll(37.80, -122.40), domEvent: { pointerType: 'touch' } }); // browser compatibility event
+            assertEqual(t.events.length, 0, mode + ': a second finger lifting must not finish the shape.');
+            assertTrue(t.manager._shapeDragging, mode + ': the drag should still be in progress.');
+
+            google.maps.event.trigger(map, 'mousemove', { latLng: ll(37.775, -122.42) });
+            google.maps.event.trigger(map, 'mouseup', { latLng: ll(37.775, -122.42), domEvent: finger1 });
+            assertSingleOverlay(t.events, mode, mode === 'circle' ? google.maps.Circle : google.maps.Rectangle);
+            cleanupMap(map);
+        });
+    });
+
     TestRunner.test('Only the left mouse button starts a circle', function ()
     {
         var map = createRealMap();
@@ -718,7 +746,7 @@
 
     TestRunner.test('Polyfill reports the Tenna fork version', function ()
     {
-        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.1', 'MCX_VERSION.');
+        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.6', 'MCX_VERSION.');
     });
 
     // ── Shape options applied to the finished overlay ──
