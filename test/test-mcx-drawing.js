@@ -780,7 +780,7 @@
 
     TestRunner.test('Polyfill reports the Tenna fork version', function ()
     {
-        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.2', 'MCX_VERSION.');
+        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.4', 'MCX_VERSION.');
     });
 
     // ── Shape options applied to the finished overlay ──
@@ -950,6 +950,25 @@
             assertEqual(e.overlay.get('zIndex'), i, e.type + ' ' + i + ' zIndex.');
         });
         assertEqual(t.events[1].overlay.get('zIndex'), undefined, 'Markers are not numbered.');
+        cleanupMap(map);
+    });
+
+    TestRunner.test('Polylines are numbered too, and a cancelled shape uses its number up, like Google', async function ()
+    {
+        var map = createRealMap();
+        var t = newManager(map);
+
+        t.manager.setDrawingMode('polyline');
+        await clickMap(map, [ll(37.77, -122.42), ll(37.78, -122.42)]);
+        clickFinishingNode(t.manager);
+
+        t.manager.setDrawingMode('circle');
+        dragOnMap(map, ll(37.77, -122.43), ll(37.77, -122.43)); // too small: discarded, number 1 is used up
+        dragOnMap(map, ll(37.77, -122.43), ll(37.775, -122.43));
+
+        assertEqual(t.events.length, 2, 'Polyline and circle should be emitted.');
+        assertEqual(t.events[0].overlay.get('zIndex'), 0, 'Polyline should get zIndex 0.');
+        assertEqual(t.events[1].overlay.get('zIndex'), 2, 'Circle should skip the number the discarded drag used.');
         cleanupMap(map);
     });
 

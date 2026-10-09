@@ -519,5 +519,332 @@
             if (autorun && savedKey) runTests();
         });
     </script>
+
+    <!-- TS-44301: draw order & click-through playground. Self-contained (own map,
+         manager, styles and ids) so it never affects the automated tests. -->
+    <style>
+        .pg-draw {
+            max-width: 800px;
+            margin: 20px auto 0;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .pg-draw-tools {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            margin: 10px 0;
+        }
+        .pg-draw-tools button {
+            background: #fff;
+            color: #1a73e8;
+            border: 1px solid #1a73e8;
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+        .pg-draw-tools button.active {
+            background: #1a73e8;
+            color: #fff;
+        }
+        .pg-draw-tools button:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+        .pg-draw-tools label {
+            font-size: 13px;
+            margin-left: 8px;
+        }
+        .pg-draw-checks {
+            font-size: 13px;
+            color: #444;
+            padding-left: 20px;
+        }
+        .pg-draw-checks li {
+            margin-bottom: 4px;
+        }
+        #pg-draw-log {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 180px;
+            overflow-y: auto;
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        .pg-draw-popup {
+            position: absolute;
+            transform: translate(-50%, -100%);
+            background: #fff;
+            border: 1px solid #9334e6;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 12px;
+            color: #9334e6;
+            white-space: nowrap;
+            cursor: pointer;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+        }
+        .pg-draw-popup.plain {
+            border-color: #d33b27;
+            color: #d33b27;
+        }
+    </style>
+
+    <div class="pg-draw">
+        <h2 style="margin-top: 0;">Draw Order &amp; Click-through Playground (TS-44301)</h2>
+        <p class="info">
+            Its own map and manager. Tick <em>Advanced markers</em> before opening to get a 40&nbsp;px custom
+            finishing node (uses <code>DEMO_MAP_ID</code>).
+        </p>
+        <button onclick="openDrawPlayground()" id="pg-draw-open">Open Playground</button>
+        <label style="font-size: 13px; margin-left: 8px;"><input type="checkbox" id="pg-draw-advanced"> Advanced markers</label>
+
+        <div class="pg-draw-tools" id="pg-draw-modes">
+            <strong style="font-size: 13px;">Tools:</strong>
+            <button data-mode="" disabled>Pan</button>
+            <button data-mode="marker" disabled>Marker</button>
+            <button data-mode="polyline" disabled>Polyline</button>
+            <button data-mode="polygon" disabled>Polygon</button>
+            <button data-mode="circle" disabled>Circle</button>
+            <button data-mode="rectangle" disabled>Rectangle</button>
+            <label>Colour <input type="color" id="pg-draw-colour" value="#e8710a" disabled></label>
+            <button id="pg-draw-clear" disabled>Clear drawn shapes</button>
+        </div>
+        <div class="pg-draw-tools" id="pg-draw-host">
+            <strong style="font-size: 13px;">App content:</strong>
+            <button id="pg-draw-fences" disabled>Add clickable geofences</button>
+            <button id="pg-draw-popups" disabled>Add custom popups</button>
+            <button id="pg-draw-remove" disabled>Remove app content</button>
+        </div>
+
+        <ul class="pg-draw-checks">
+            <li><strong>Draw on top:</strong> draw a polygon, then a circle and a polyline over it. Each new shape
+                sits above the older ones; the log shows its <code>zIndex</code> (0, 1, 2…). A cancelled
+                circle/rectangle (tiny drag) uses a number up.</li>
+            <li><strong>Click-through:</strong> with a tool active, start a shape inside a green geofence or a
+                shape you drew. It draws, and the log shows no <em>geofence click</em>. With Pan selected,
+                geofences open their info window again.</li>
+            <li><strong>Polyline taps:</strong> with DevTools touch emulation or on a tablet, tap 3–4 points.
+                The line must not finish on the first or second tap; tapping the last point finishes it.</li>
+            <li><strong>Polygon close:</strong> close a polygon on its first point. The log shows exactly the
+                points placed (no spike or extra vertex). With <em>Advanced markers</em>, a click near the edge
+                of the big node closes it too.</li>
+            <li><strong>Custom popups:</strong> with a tool active, the purple popups (float pane and
+                <code>data-mcx-ui</code>) log their own click and add no vertex. The red one has neither, so
+                drawing through it is expected.</li>
+            <li><strong>Controls:</strong> zoom, map type, the drawing toolbar and info window close buttons
+                still work while a tool is active.</li>
+        </ul>
+
+        <div id="pg-draw-map" style="width: 100%; height: 500px; border: 1px solid #ddd; border-radius: 4px;"></div>
+        <p style="font-size: 13px; font-weight: 600; margin: 10px 0 4px;">Events</p>
+        <div id="pg-draw-log"></div>
+    </div>
+
+    <script>
+        var drawPlayground = null; // { map, manager, overlays, host, infoWindow }
+
+        async function openDrawPlayground()
+        {
+            if (drawPlayground) return;
+            var openBtn = document.getElementById('pg-draw-open');
+            if (openBtn.disabled) return; // already opening
+            openBtn.disabled = true;
+
+            // Maps and the polyfill load once per page, shared with Run Tests
+            var ready = window.google && google.maps && google.maps.drawing && google.maps.drawing.DrawingManager;
+            if (!ready)
+            {
+                showStatus('⏳ Loading Google Maps API...', 'success');
+                ready = await loadGoogleMapsAPI() && google.maps.drawing && google.maps.drawing.DrawingManager;
+            }
+            if (!ready)
+            {
+                openBtn.disabled = false;
+                return;
+            }
+
+            var advanced = document.getElementById('pg-draw-advanced').checked;
+            if (advanced && google.maps.importLibrary) await google.maps.importLibrary('marker');
+            document.getElementById('pg-draw-advanced').disabled = true;
+
+            var mapOpts = { zoom: 13, center: { lat: 37.7749, lng: -122.4194 } };
+            if (advanced) mapOpts.mapId = 'DEMO_MAP_ID';
+            var map = new google.maps.Map(document.getElementById('pg-draw-map'), mapOpts);
+
+            var managerOpts = {
+                map: map,
+                silent: true, // keep [MCX] logs out of the captured test output
+                drawingControl: true,
+                drawingControlOptions: { drawingModes: ['marker', 'polyline', 'polygon', 'circle', 'rectangle'] }
+            };
+            if (advanced)
+            {
+                managerOpts.markerType = 'advanced';
+                // Big on purpose: a click near its edge must still finish the shape
+                managerOpts.finishingMarkerSVG =
+                    '<svg width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" ' +
+                    'fill="#fff" fill-opacity="0.8" stroke="#9334e6" stroke-width="3"/></svg>';
+            }
+            var manager = new google.maps.drawing.DrawingManager(managerOpts);
+            drawPlayground = { map: map, manager: manager, overlays: [], host: [], infoWindow: new google.maps.InfoWindow() };
+            applyDrawPlaygroundStyle();
+
+            // There is no drawingmode_changed event, so keep the buttons in sync
+            // by wrapping setDrawingMode (the map toolbar calls it too).
+            var setMode = manager.setDrawingMode.bind(manager);
+            manager.setDrawingMode = function (mode)
+            {
+                setMode(mode);
+                syncDrawPlaygroundTools();
+            };
+
+            google.maps.event.addListener(manager, 'overlaycomplete', function (e)
+            {
+                drawPlayground.overlays.push(e.overlay);
+                var o = e.overlay;
+                var z = o.get ? o.get('zIndex') : undefined;
+                var detail = e.type === 'circle' ? ' radius ' + Math.round(o.getRadius()) + ' m'
+                    : (e.type === 'polyline' || e.type === 'polygon') ? ' ' + o.getPath().getLength() + ' points' : '';
+                drawPlaygroundLog('overlaycomplete: ' + e.type + detail + (z !== undefined ? ', zIndex ' + z : ''));
+            });
+
+            document.querySelectorAll('#pg-draw-modes [data-mode]').forEach(function (btn)
+            {
+                btn.addEventListener('click', function () { manager.setDrawingMode(btn.dataset.mode || null); });
+            });
+            document.getElementById('pg-draw-colour').addEventListener('input', applyDrawPlaygroundStyle);
+            document.getElementById('pg-draw-clear').addEventListener('click', function ()
+            {
+                drawPlayground.overlays.forEach(function (o) { if (o.setMap) o.setMap(null); else o.map = null; });
+                drawPlayground.overlays = [];
+                drawPlaygroundLog('cleared drawn shapes');
+            });
+            document.getElementById('pg-draw-fences').addEventListener('click', addDrawPlaygroundFences);
+            document.getElementById('pg-draw-popups').addEventListener('click', addDrawPlaygroundPopups);
+            document.getElementById('pg-draw-remove').addEventListener('click', function ()
+            {
+                drawPlayground.host.forEach(function (h) { h.setMap(null); });
+                drawPlayground.host = [];
+                drawPlayground.infoWindow.close();
+                drawPlaygroundLog('removed app content');
+            });
+
+            // Only a click the drawing let through reaches the map
+            map.addListener('click', function (e)
+            {
+                drawPlaygroundLog('map click at ' + e.latLng.lat().toFixed(4) + ', ' + e.latLng.lng().toFixed(4));
+            });
+
+            document.querySelectorAll('#pg-draw-modes button, #pg-draw-modes input, #pg-draw-host button')
+                .forEach(function (el) { el.disabled = false; });
+            syncDrawPlaygroundTools();
+            drawPlaygroundLog('playground ready (Maps ' + google.maps.version + ', MCX ' + google.maps.drawing.MCX_VERSION +
+                ', ' + manager.getMarkerType() + ' markers)');
+        }
+
+        // Clickable shapes made the way the host app makes saved geofences
+        function addDrawPlaygroundFences()
+        {
+            var map = drawPlayground.map;
+            var c = map.getCenter();
+            var o = (drawPlayground.host.length / 4) * 0.004;
+            var lat = c.lat() + o, lng = c.lng() + o;
+            var style = { map: map, strokeColor: '#1e8e3e', strokeWeight: 2, fillColor: '#1e8e3e', fillOpacity: 0.2 };
+            [
+                ['polygon', new google.maps.Polygon(Object.assign({
+                    paths: [{ lat: lat + 0.004, lng: lng - 0.03 }, { lat: lat + 0.016, lng: lng - 0.02 }, { lat: lat + 0.002, lng: lng - 0.01 }]
+                }, style))],
+                ['circle', new google.maps.Circle(Object.assign({ center: { lat: lat - 0.008, lng: lng - 0.02 }, radius: 600 }, style))],
+                ['rectangle', new google.maps.Rectangle(Object.assign({
+                    bounds: { south: lat - 0.004, west: lng + 0.005, north: lat + 0.008, east: lng + 0.025 }
+                }, style))],
+                ['polyline', new google.maps.Polyline({
+                    map: map, strokeColor: '#1e8e3e', strokeWeight: 6,
+                    path: [{ lat: lat + 0.014, lng: lng + 0.005 }, { lat: lat + 0.02, lng: lng + 0.03 }]
+                })]
+            ].forEach(function (f)
+            {
+                var name = f[0], shape = f[1];
+                shape.addListener('click', function (e)
+                {
+                    drawPlaygroundLog('geofence click: ' + name);
+                    drawPlayground.infoWindow.setContent('Existing ' + name);
+                    drawPlayground.infoWindow.setPosition(e.latLng);
+                    drawPlayground.infoWindow.open(map);
+                });
+                drawPlayground.host.push(shape);
+            });
+            drawPlaygroundLog('added clickable geofences');
+        }
+
+        // Custom OverlayView popups: one in the float pane, one in
+        // overlayMouseTarget marked data-mcx-ui, and one in overlayMouseTarget
+        // with neither (drawing goes through that one).
+        function addDrawPlaygroundPopups()
+        {
+            var c = drawPlayground.map.getCenter();
+            [
+                { pane: 'floatPane', text: 'Float-pane popup (click me)', dLat: 0.012, dLng: -0.012 },
+                { pane: 'overlayMouseTarget', text: 'data-mcx-ui popup (click me)', dLat: 0.012, dLng: 0.012, ui: true },
+                { pane: 'overlayMouseTarget', text: 'Unmarked popup: draws through', dLat: -0.014, dLng: 0, plain: true }
+            ].forEach(function (p)
+            {
+                var ov = new google.maps.OverlayView();
+                var pos = new google.maps.LatLng(c.lat() + p.dLat, c.lng() + p.dLng);
+                var el = document.createElement('div');
+                el.className = 'pg-draw-popup' + (p.plain ? ' plain' : '');
+                el.textContent = p.text;
+                if (p.ui) el.setAttribute('data-mcx-ui', '');
+                el.addEventListener('click', function () { drawPlaygroundLog('popup click: ' + p.text); });
+                ov.onAdd = function () { this.getPanes()[p.pane].appendChild(el); };
+                ov.draw = function ()
+                {
+                    var px = this.getProjection().fromLatLngToDivPixel(pos);
+                    el.style.left = px.x + 'px';
+                    el.style.top = px.y + 'px';
+                };
+                ov.onRemove = function () { el.remove(); };
+                ov.setMap(drawPlayground.map);
+                drawPlayground.host.push(ov);
+            });
+            drawPlaygroundLog('added custom popups');
+        }
+
+        function applyDrawPlaygroundStyle()
+        {
+            if (!drawPlayground) return;
+            var colour = document.getElementById('pg-draw-colour').value;
+            var area = { strokeColor: colour, strokeWeight: 2, fillColor: colour, fillOpacity: 0.35 };
+            drawPlayground.manager.setOptions({
+                polylineOptions: { strokeColor: colour, strokeWeight: 4 },
+                polygonOptions: area,
+                circleOptions: area,
+                rectangleOptions: area
+            });
+        }
+
+        function syncDrawPlaygroundTools()
+        {
+            if (!drawPlayground) return;
+            var mode = drawPlayground.manager.getDrawingMode() || '';
+            document.querySelectorAll('#pg-draw-modes [data-mode]').forEach(function (btn)
+            {
+                btn.classList.toggle('active', btn.dataset.mode === mode);
+            });
+        }
+
+        function drawPlaygroundLog(msg)
+        {
+            var log = document.getElementById('pg-draw-log');
+            var line = document.createElement('div');
+            line.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+            log.insertBefore(line, log.firstChild);
+        }
+    </script>
 </body>
 </html>
