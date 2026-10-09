@@ -1,6 +1,6 @@
 ﻿/*!
  * MCX Drawing — Google Maps Drawing Manager Polyfill (Unified)
- * Version 2.0.0-tenna.2 (Tenna fork of 2.0.0)
+ * Version 2.0.0-tenna.4 (Tenna fork of 2.0.0)
  *
  * File: mcx-drawing-polyfill.js
  *
@@ -56,6 +56,20 @@
  *
  * IMPORTANT: this file must be loaded AFTER the Google Maps JS API. Loading it
  *   first is now a hard error rather than a silent no-op.
+ *
+ * ── Tenna fork changes (2.0.0-tenna.4) ───────────────────────────────────
+ *   - CHANGE: drawing input is read as raw browser events on the map container
+ *     (capture phase) and converted with the OverlayView projection, as Google's
+ *     DrawingManager reads the map's topmost input layer. Shapes already on the
+ *     map, however and whenever created, can no longer swallow a drawing click or
+ *     drag. Controls, the toolbar, info windows, the float pane and elements
+ *     marked data-mcx-ui are left alone. While the projection is not ready the
+ *     map-event path is used instead. A press that arrives by both routes is
+ *     handled once whichever route is first, and the finishing node is hit by
+ *     pixel proximity on both (a custom SVG node is measured).
+ *   - CHANGE: polylines are numbered in the running zIndex too, and the number is
+ *     taken when drawing starts (a cancelled shape uses its number up), like
+ *     Google, so a new shape is no longer drawn under older ones.
  *
  * ── Tenna fork changes (2.0.0-tenna.2) ───────────────────────────────────
  *   - CHANGE: like Google's DrawingManager, selecting a tool leaves the map's
@@ -163,7 +177,7 @@
         return; // Native library present — do nothing
     }
 
-    var MCX_VERSION = '2.0.0-tenna.2';
+    var MCX_VERSION = '2.0.0-tenna.4';
 
     // Informational logging is opt-out per manager (`silent: true`) and can be
     // killed page-wide with window.mcxDrawingSilent. Warnings always print.
@@ -325,6 +339,13 @@
         }
     };
 
+    // Elements inside the map div that are controls, not map surface: input on
+    // them is never drawing input. Apps mark their own map overlays with
+    // data-mcx-ui to keep them clickable while a tool is active.
+    var _UI_SELECTOR = '.mcx-draw-toolbar, [data-mcx-ui], button, a, input, select, textarea, ' +
+        '.gm-style-iw, .gm-style-iw-c, .gm-ui-hover-effect, .gmnoprint, ' +
+        '.gm-bundled-control, .gm-style-cc, .gm-fullscreen-control, .gm-svpc';
+
     // ── DrawingManager Class ───────────────────────────────
 
     var DrawingManager = (function ()
@@ -349,6 +370,15 @@
             // map listener, which reads to the user as "the click did nothing".
             this._completed = [];
             this._callerClickable = new WeakMap(); // overlay -> clickable the caller asked for
+            this._projOverlay = null;   // OverlayView used only for its projection
+            this._polyZ = null;         // zIndex taken when a polygon/polyline starts
+            this._dragZ = null;         // zIndex taken when a circle/rectangle drag starts
+            this._dragStartTime = 0;
+            this._domInput = null;      // capture-phase listeners on the map div
+            this._downPt = null;        // where the current press began (client px)
+            this._lastDomMove = null;   // last pointer move handled by the raw path
+            this._lastClickPx = null;   // container px of the last accepted click
+            this._lastClickTime = 0;
             this._zCounter = 0; // next zIndex for finished circles/rectangles/polygons
             this._suppressCompletedClicks = options.suppressCompletedClicks !== false;
 
@@ -538,6 +568,8 @@
             {
                 this._lastMapClickTime = 0;
                 this._ignoreMapClick = false;
+                this._lastClickPx = null;
+                this._lastClickTime = 0;
             }
 
             this._currentMode = mode;
@@ -855,10 +887,27 @@
                 ['touchcancel', function () { if (self._shapeDragging) self._cancelShapeDraw(); }]
             ];
             this._docListeners.forEach(function (l) { document.addEventListener(l[0], l[1]); });
+
+            // Native Google drawing reads the map's raw, topmost input layer, so
+            // shapes already on the map can never swallow a drawing click or drag.
+            // Do the same: watch raw browser input on the map div (capture phase,
+            // before any shape sees it) and turn pointer positions into lat/lngs
+            // with the public OverlayView projection. If the projection is not
+            // ready yet, nothing is intercepted and the map-event path above runs.
+            this._projOverlay = new google.maps.OverlayView();
+            this._projOverlay.onAdd = this._projOverlay.draw = this._projOverlay.onRemove = function () {};
+            this._projOverlay.setMap(map);
+            this._attachDomInput();
         };
 
         DrawingManager.prototype._detachFromMap = function ()
         {
+            this._detachDomInput();
+            if (this._projOverlay)
+            {
+                this._projOverlay.setMap(null);
+                this._projOverlay = null;
+            }
             if (this._docListeners)
             {
                 this._docListeners.forEach(function (l) { document.removeEventListener(l[0], l[1]); });
@@ -917,14 +966,31 @@
 
             var mode = this._currentMode;
 
+            // Like Google's DrawingManager: a second click within 300 ms and a few
+            // pixels of the last one is the same click arriving by two routes
+            // (browser input and the map's own event, e.g. a touch tap). Checked
+            // first, so it does not matter which route delivers the press first.
+            if (this._isDuplicateClick(e.latLng)) { _debug('discarded', 'duplicate click (300ms / 6px)'); return; }
+
             if (mode === OverlayType.MARKER)
             {
+                this._rememberClick(e.latLng);
                 this._finishMarker(e.latLng);
                 return;
             }
 
             if (mode === OverlayType.POLYLINE || mode === OverlayType.POLYGON)
             {
+                // A click on the finishing node, by pixels as Google does. Both
+                // routes come through here, so neither can add a vertex first.
+                if (this._nodeHit(e.latLng))
+                {
+                    this._rememberClick(e.latLng);
+                    this._handleFinishingNodeClick(true);
+                    return;
+                }
+
+
                 var now = Date.now();
 
                 // FIX: Time Debounce - ignore double-clicks caused by physical mouse bounce
@@ -950,6 +1016,7 @@
                 }
 
                 this._lastMapClickTime = now;
+                this._rememberClick(e.latLng);
                 this._coords.push(e.latLng);
 
                 if (this._coords.length === 1)
@@ -969,6 +1036,7 @@
         {
             if (!this._currentMode) return;
             if (!e.latLng) return;
+            if (this._isHandledMove(e)) return; // the raw path already handled this move
 
             var mode = this._currentMode;
             if ((mode === OverlayType.POLYLINE || mode === OverlayType.POLYGON) && this._coords.length > 0)
@@ -977,15 +1045,19 @@
             }
         };
 
-        DrawingManager.prototype._handleFinishingNodeClick = function ()
+        DrawingManager.prototype._handleFinishingNodeClick = function (viaProximity)
         {
             var self = this;
             var mode = this._currentMode;
             if (!mode) return;
+            // The node was already handled by pixel proximity; this is the marker's
+            // own click for the same press.
+            if (viaProximity !== true && this._ignoreMapClick) return;
 
             // FIX: If the Map click event fired just milliseconds before this Marker click event,
             // it means we caught an event bubble. Remove the bogus point to prevent stroke overshoot.
-            if (this._lastMapClickTime && (Date.now() - this._lastMapClickTime) < 200)
+            // Not needed when the node was hit by pixel proximity: no vertex was added.
+            if (viaProximity !== true && this._lastMapClickTime && (Date.now() - this._lastMapClickTime) < 200)
             {
                 this._coords.pop();
             }
@@ -1019,6 +1091,9 @@
 
         DrawingManager.prototype._initActiveShape = function ()
         {
+            // Google takes the next zIndex when drawing starts, so a cancelled
+            // shape still uses up its number.
+            this._polyZ = this._nextZIndex(this._currentMode === OverlayType.POLYGON ? this._polygonOptions : this._polylineOptions);
             var map = this._map;
             var coords = this._coords;
             // The in-progress line takes its stroke from the shape's options so
@@ -1205,6 +1280,7 @@
 
         DrawingManager.prototype._cancelCurrentDraw = function ()
         {
+            this._polyZ = null;
             this._destroyGhostLine();
             this._destroyActiveShape();
             if (this._finishingMarker)
@@ -1226,12 +1302,18 @@
             var button = e.domEvent ? e.domEvent.button : undefined;
             if (button !== undefined && button !== 0) return;
 
+            // The same press can arrive twice (raw input, then the map's own
+            // mousedown). Ignore the repeat; a later press still restarts a stuck drag.
+            if (this._shapeDragging && Date.now() - this._dragStartTime < 100) return;
+            this._dragStartTime = Date.now();
+
             // Clean up any stray preview
             if (this._shapePreview) { this._shapePreview.setMap(null); this._shapePreview = null; }
 
             this._shapeDragging = true;
             this._shapeStart = e.latLng;
             this._setDragLock(true);
+            this._dragZ = this._nextZIndex(mode === OverlayType.CIRCLE ? this._circleOptions : this._rectangleOptions);
 
             // The preview must not be editable/draggable: its resize handles sit
             // under the pointer and would steal the drag. The caller's editable/
@@ -1257,6 +1339,7 @@
         DrawingManager.prototype._shapeMove = function (e)
         {
             if (!this._shapeDragging || !e || !e.latLng || !this._shapePreview) return;
+            if (this._isHandledMove(e)) return; // the raw path already handled this move
 
             if (this._currentMode === OverlayType.CIRCLE)
             {
@@ -1276,6 +1359,8 @@
             if (!this._shapeDragging) return;
             this._shapeDragging = false;
             this._setDragLock(false);
+            var dragZ = this._dragZ;
+            this._dragZ = null;
 
             var mode = this._currentMode;
             var preview = this._shapePreview;
@@ -1313,7 +1398,7 @@
                 draggable: shapeOpts.draggable === true,
                 clickable: shapeOpts.clickable !== false
             });
-            preview.set('zIndex', this._nextZIndex(shapeOpts));
+            preview.set('zIndex', dragZ != null ? dragZ : this._nextZIndex(shapeOpts));
 
             this._trackCompleted(preview);
 
@@ -1328,6 +1413,7 @@
         {
             if (this._shapePreview) { this._shapePreview.setMap(null); this._shapePreview = null; }
             if (this._shapeDragging) this._setDragLock(false);
+            this._dragZ = null;
             this._shapeDragging = false;
             this._shapeStart = null;
         };
@@ -1397,6 +1483,7 @@
         DrawingManager.prototype._finishShape = function (mode)
         {
             var coords = this._coords.slice(); // snapshot
+            var z = this._polyZ; // read before _cancelCurrentDraw clears it
 
             // Clear all temporary drawing assets before dispatching the final shape
             this._cancelCurrentDraw();
@@ -1410,7 +1497,8 @@
                 // Styling from polylineOptions; path/map always win over caller values
                 options = Object.assign({}, this._polylineOptions, {
                     path: coords,
-                    map: this._map
+                    map: this._map,
+                    zIndex: z != null ? z : this._nextZIndex(this._polylineOptions)
                 });
                 mockOverlay = new google.maps.Polyline(options);
                 this._trackCompleted(mockOverlay);
@@ -1426,7 +1514,7 @@
                 options = Object.assign({}, this._polygonOptions, {
                     paths: [coords],
                     map: this._map,
-                    zIndex: this._nextZIndex(this._polygonOptions)
+                    zIndex: z != null ? z : this._nextZIndex(this._polygonOptions)
                 });
                 mockOverlay = new google.maps.Polygon(options);
                 this._trackCompleted(mockOverlay);
@@ -1444,14 +1532,13 @@
 
         // ── Completed overlay tracking ─────────────────────
         //
-        // Every overlay this manager finishes is recorded here. All drawing
-        // input arrives via the MAP's click/mousemove events, so anything
-        // sitting on top of the map with hit-testing enabled will intercept a
-        // click before the manager ever sees it. Completed shapes default to
-        // clickable:true (consumers need that to select them), which meant the
-        // first click of a new shape was frequently swallowed by a shape drawn
-        // moments earlier — most visibly on narrow maps, where more of the
-        // viewport is covered by what you just drew.
+        // Every overlay this manager finishes is recorded here. Drawing input is
+        // read as raw browser events (see "Raw input" below), but until the map's
+        // projection is ready it arrives via the MAP's click/mousemove events,
+        // and then anything on top of the map with hit-testing enabled
+        // intercepts a click before the manager sees it. Completed shapes default
+        // to clickable:true (consumers need that to select them), so a shape
+        // drawn moments earlier could swallow the first click of the next one.
 
         // Google numbers finished shapes 0, 1, 2, ... so the newest sits on top.
         // A zIndex the caller set is kept and does not use up a number.
@@ -1514,6 +1601,200 @@
                     /* An overlay may have been torn down by the consumer — ignore. */
                 }
             });
+        };
+
+        // ── Raw input (native-style) ───────────────────────
+
+        DrawingManager.prototype._containerPixel = function (latLng)
+        {
+            var proj = this._projOverlay && this._projOverlay.getProjection();
+            return proj ? proj.fromLatLngToContainerPixel(latLng) : null;
+        };
+
+        DrawingManager.prototype._eventLatLng = function (ev)
+        {
+            var proj = this._projOverlay && this._projOverlay.getProjection();
+            var div = this._map && this._map.getDiv ? this._map.getDiv() : null;
+            if (!proj || !div) return null;
+            var r = div.getBoundingClientRect();
+            return proj.fromContainerPixelToLatLng(new google.maps.Point(ev.clientX - r.left, ev.clientY - r.top));
+        };
+
+        DrawingManager.prototype._surfaceEvent = function (ev)
+        {
+            var t = ev.target;
+            var div = this._map && this._map.getDiv ? this._map.getDiv() : null;
+            if (!t || !t.matches || !div || !div.contains(t)) return false;
+            // The float pane holds info windows and the app's own popups (custom
+            // OverlayViews): those keep their clicks, as with Google's drawing.
+            var panes = this._projOverlay && this._projOverlay.getPanes();
+            var floatPane = panes ? panes.floatPane : null;
+            // Walk up to the map div only: an <a> or button AROUND the map is not a control.
+            for (var e = t; e && e !== div; e = e.parentElement)
+            {
+                if (e === floatPane || e.matches(_UI_SELECTOR)) return false;
+            }
+            return true;
+        };
+
+        // Only accepted clicks are remembered, so a click that was thrown away
+        // (debounce, jitter) cannot make the next real click look like a repeat.
+        DrawingManager.prototype._isDuplicateClick = function (latLng)
+        {
+            var px = this._containerPixel(latLng);
+            return !!(px && this._lastClickPx && (Date.now() - this._lastClickTime) <= 300 &&
+                Math.abs(px.x - this._lastClickPx.x) <= 6 && Math.abs(px.y - this._lastClickPx.y) <= 6);
+        };
+
+        DrawingManager.prototype._rememberClick = function (latLng)
+        {
+            this._lastClickPx = this._containerPixel(latLng);
+            this._lastClickTime = Date.now();
+        };
+
+        // Is a click at latLng on the finishing node? Decided by pixels, as
+        // Google does, because a raw click never reaches the marker itself.
+        DrawingManager.prototype._nodeHit = function (latLng)
+        {
+            var mode = this._currentMode;
+            var c = this._coords;
+            var target = null;
+            if (mode === OverlayType.POLYLINE && c.length >= 1) target = c[c.length - 1];
+            else if (mode === OverlayType.POLYGON && c.length >= 2) target = c[0];
+            if (!target || !this._finishingMarker) return false;
+
+            var px = this._containerPixel(target);
+            var at = this._containerPixel(latLng);
+            if (!px || !at) return false;
+            var dx = at.x - px.x;
+            var dy = at.y - px.y;
+            var tol = this._nodeRadiusPx() + 4;
+            return (dx * dx + dy * dy) <= tol * tol;
+        };
+
+        // Half the drawn size of the finishing node. A custom SVG (advanced mode)
+        // can be any size, so it is measured; the default circle is scale + stroke.
+        DrawingManager.prototype._nodeRadiusPx = function ()
+        {
+            var fo = this._finishingMarkerSVGOptions;
+            var r = Math.max(6, (fo.scale || 5) + (fo.strokeWeight || 0));
+            var content = this._markerMode === 'advanced' && this._finishingMarker && this._finishingMarker.content;
+            var el = content && content.querySelector ? (content.querySelector('svg') || content) : null;
+            if (el && el.getBoundingClientRect)
+            {
+                var b = el.getBoundingClientRect();
+                r = Math.max(r, b.width / 2, b.height / 2);
+            }
+            return r;
+        };
+
+        // The map's own mousemove for a pointer move the raw path already handled
+        // (same position, a moment later).
+        DrawingManager.prototype._isHandledMove = function (e)
+        {
+            var d = e && e.domEvent;
+            var last = this._lastDomMove;
+            return !!(d && last && d.clientX === last.clientX && d.clientY === last.clientY &&
+                Date.now() - last.time < 50);
+        };
+
+        DrawingManager.prototype._attachDomInput = function ()
+        {
+            var self = this;
+            var div = this._map && this._map.getDiv ? this._map.getDiv() : null;
+            if (!div || !div.addEventListener) return;
+
+            this._domTarget = div;
+            this._domInput = [
+                ['pointerdown', function (ev) { self._onDomPointerDown(ev); }],
+                // The compatibility mouse/touch events that follow a handled press
+                // must not start a map pan either.
+                ['mousedown', function (ev) { self._onDomPress(ev); }],
+                ['touchstart', function (ev) { self._onDomPress(ev); }],
+                ['pointermove', function (ev) { self._onDomPointerMove(ev); }],
+                ['click', function (ev) { self._onDomClick(ev); }],
+                // A double-click is never for a shape underneath either.
+                ['dblclick', function (ev)
+                {
+                    if (self._currentMode && self._surfaceEvent(ev)) ev.stopImmediatePropagation();
+                }]
+            ];
+            // touchstart is never cancelled here, so let the browser scroll without waiting for us
+            this._domInput.forEach(function (l)
+            {
+                div.addEventListener(l[0], l[1], l[0] === 'touchstart' ? { capture: true, passive: true } : true);
+            });
+        };
+
+        DrawingManager.prototype._detachDomInput = function ()
+        {
+            var div = this._domTarget;
+            if (div && this._domInput)
+            {
+                this._domInput.forEach(function (l) { div.removeEventListener(l[0], l[1], true); });
+            }
+            this._domInput = null;
+            this._domTarget = null;
+        };
+
+        DrawingManager.prototype._onDomPointerDown = function (ev)
+        {
+            if (!this._currentMode || !this._surfaceEvent(ev)) return;
+            if (ev.isPrimary === false || ev.button !== 0) return;
+
+            this._downPt = { x: ev.clientX, y: ev.clientY };
+            if (!_isDragShapeMode(this._currentMode)) return;
+
+            var ll = this._eventLatLng(ev);
+            if (!ll) return;
+            this._shapeDown({ latLng: ll, domEvent: ev });
+            // The press belongs to the shape: nothing under it (map pan, shape
+            // drag, shape click) may react.
+            if (this._shapeDragging) ev.stopImmediatePropagation();
+        };
+
+        DrawingManager.prototype._onDomPress = function (ev)
+        {
+            if (this._shapeDragging && _isDragShapeMode(this._currentMode) && this._surfaceEvent(ev))
+            {
+                ev.stopImmediatePropagation();
+            }
+        };
+
+        DrawingManager.prototype._onDomPointerMove = function (ev)
+        {
+            if (!this._currentMode) return;
+            if (!this._shapeDragging && !this._surfaceEvent(ev)) return;
+
+            var ll = this._eventLatLng(ev);
+            if (!ll) return;
+            this._lastDomMove = { clientX: ev.clientX, clientY: ev.clientY, time: Date.now() };
+            if (this._shapeDragging) this._shapeMove({ latLng: ll });
+            else this._handleMouseMove({ latLng: ll });
+        };
+
+        DrawingManager.prototype._onDomClick = function (ev)
+        {
+            var mode = this._currentMode;
+            if (!mode || !this._surfaceEvent(ev)) return;
+
+            // Circle/rectangle are drawn by dragging; a click never reaches shapes.
+            if (_isDragShapeMode(mode))
+            {
+                if (this._eventLatLng(ev)) ev.stopImmediatePropagation();
+                return;
+            }
+
+            // A press that travelled is a map pan, not a click.
+            var down = this._downPt;
+            this._downPt = null;
+            if (down && Math.sqrt(Math.pow(ev.clientX - down.x, 2) + Math.pow(ev.clientY - down.y, 2)) > 5) return;
+
+            var ll = this._eventLatLng(ev);
+            if (!ll) return; // projection not ready: the map-event path handles it
+
+            ev.stopImmediatePropagation();
+            this._handleMapClick({ latLng: ll });
         };
 
         // ── Cursor & state helpers ─────────────────────────

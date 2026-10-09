@@ -45,6 +45,15 @@ All styling options are **partial overrides** — supply only the fields you wan
 * `google.maps.drawing.MCXShapeUtils` — `metersBetween(a, b)`, `rectangleSize(rect)`, `setRectangleSize(rect, w, h)` (metres, spherical maths, zero-dependency).
 * `google.maps.drawing.MCXMarkerUtils` — `getLatLng(overlay)` → `{lat, lng}` from either marker class.
 
+### Drawing input and stacking order *(2.0.0-tenna.4)*
+
+* **Existing shapes cannot block drawing.** While a tool is active, the polyfill reads the browser's pointer events on the map before any shape sees them (the way Google's DrawingManager reads the map's topmost input layer) and converts the pointer position to map coordinates with the public `OverlayView` projection. A click or drag that starts on top of an existing shape therefore draws, and a double-click on a shape does not reach the shape.
+* **Controls are left alone.** The drawing toolbar, the Maps zoom and map-type controls, links, info windows and anything in the map's `floatPane` (custom popups) work as normal. Mark any other overlay element of your own with a `data-mcx-ui` attribute to keep it clickable while a tool is active. A press that moves more than 5 px is treated as a map pan, not a click.
+* **No double clicks.** A second click within 300 ms and about 6 px of the last accepted one is ignored (it is the same click arriving by two routes, for example on a touch tap), whichever route arrives first. A click on the finishing node is detected by pixel distance on both routes; a custom `finishingMarkerSVG` is measured, so its whole drawn area counts.
+* **Fallback.** If the map's projection is not ready yet, nothing is intercepted and the map's own events are used instead.
+* **Stacking order.** Finished circles, rectangles, polygons and polylines get a running `zIndex` (0, 1, 2…, newest on top). The number is taken when drawing starts, so a cancelled shape uses its number up, as in Google. A `zIndex` you set in the shape options is kept and does not use a number. Markers are not numbered.
+* **Manual checks.** The *Draw Order & Click-through Playground* at the bottom of `test/test.html` walks through each of the above (tick *Advanced markers* for a custom finishing node).
+
 ### Demos
 
 * **`demo-basic.html`** — API without `libraries=marker`, no `mapId` → auto-resolves to basic. All five tools + custom shape/ghost-line styling + the metre-based property editor.
