@@ -72,7 +72,7 @@ This polyfill solves the problem by **perfectly replicating the original Google 
 An optional extension, **`mcx-drawing-shapes.js`**, adds two more drawing tools on top of the core polyfill. Load it *after* `mcx-drawing-polyfill.js` and it self-applies by monkey-patching the `DrawingManager` prototype — the base file is left untouched.
 
 * **Two new tools:** adds `circle` and `rectangle` to `OverlayType` and the toolbar. List them in `drawingControlOptions.drawingModes` to show the buttons.
-* **Drag-to-draw:** press and drag to size the shape (map panning is suspended while these tools are active, then automatically restored).
+* **Drag-to-draw:** press and drag to size the shape. The map keeps its own pan and zoom while the tool is only selected; panning and zoom are locked only while you drag, then restored.
 * **Editable & resizable:** finished shapes are returned as native `google.maps.Circle` / `google.maps.Rectangle` with resize handles and drag-to-move.
 * **Metre-based editing:** read or set real-world dimensions — circle **radius**, rectangle **width** / **height** — in metres via `google.maps.drawing.MCXShapeUtils` (`rectangleSize`, `setRectangleSize`, `metersBetween`). Uses inline spherical maths, so it remains **zero-dependency** (no geometry library required).
 * **Event Bridging:** fires `overlaycomplete` (with `type: 'circle' | 'rectangle'`) plus dedicated `circlecomplete` / `rectanglecomplete` events, matching the existing pattern.
@@ -91,6 +91,16 @@ drawingControlOptions: {
 ```
 
 See **`demo-shapes.html`** for a complete example with a live metre-based property editor (radius / width / height), resize handles, and click-empty-map-to-deselect.
+
+### Map settings and gestures *(2.0.0-tenna.2)*
+
+Drawing changes a few map settings. The polyfill saves them first and puts them back afterwards, so your map behaves as before once drawing ends.
+
+* **What is saved and restored:** double-click zoom, the map's cursors (`draggableCursor` and the container's cursor) and `touch-action` on the map container. They are restored when the tool is switched off (`setDrawingMode(null)` or the Pan button) and when the manager is detached with `setMap(null)`, even in the middle of a drag.
+* **Only values the polyfill set are restored.** A cursor or setting your app changes while a tool is active is kept, unless the user switches to another tool before turning drawing off. Your own map cursor is not wiped.
+* **Selecting a tool does not lock the map.** Wheel zoom, the zoom buttons and (for marker, polyline and polygon) drag-to-pan keep working, as in Google's DrawingManager.
+* **Circle and rectangle lock the map only while you drag.** `gestureHandling` is set to `'none'` for the drag, and the previous value is put back when the drag ends or is cancelled.
+* **Touch:** while the circle or rectangle tool is selected, the map container has `touch-action: none` so a finger drag draws the shape instead of scrolling the page.
 
 ## 🚀 How it works
 Because Google is only deprecating the *interaction layer* (the Drawing Manager), the base map shapes (`google.maps.Marker`, `google.maps.Polyline`, `google.maps.Polygon`) remain perfectly safe and fully supported. 

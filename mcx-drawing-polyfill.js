@@ -1,6 +1,6 @@
 ﻿/*!
  * MCX Drawing — Google Maps Drawing Manager Polyfill (Unified)
- * Version 2.0.0-tenna.1 (Tenna fork of 2.0.0)
+ * Version 2.0.0-tenna.2 (Tenna fork of 2.0.0)
  *
  * File: mcx-drawing-polyfill.js
  *
@@ -57,12 +57,23 @@
  * IMPORTANT: this file must be loaded AFTER the Google Maps JS API. Loading it
  *   first is now a hard error rather than a silent no-op.
  *
+ * ── Tenna fork changes (2.0.0-tenna.2) ───────────────────────────────────
+ *   - CHANGE: like Google's DrawingManager, selecting a tool leaves the map's
+ *     pan/zoom gestures alone; circle/rectangle lock `gestureHandling` ('none')
+ *     only while a drag is in progress and then put it back. (tenna.1 locked
+ *     gestures from the moment the tool was selected.)
+ *   - FIX: what drawing changes on the map (double-click zoom, the map cursors,
+ *     touch-action, and gestureHandling during a drag) is saved first and put
+ *     back when drawing ends or the manager is detached. Only values this
+ *     manager set are restored: a cursor or setting the host changes mid-draw is
+ *     kept (unless the user picks another tool before turning drawing off, which
+ *     re-applies the drawing values), and a host's own cursor is no longer wiped.
+ *
  * ── Tenna fork changes (2.0.0-tenna.1) ───────────────────────────────────
  *   - CHANGE: drawing modes use `gestureHandling` instead of the deprecated
- *     `draggable` map option: 'none' for circle/rectangle, 'auto' otherwise.
+ *     `draggable` map option.
  *   - FIX: the map's gestureHandling and disableDoubleClickZoom are saved when
- *     drawing starts and restored when it ends or the manager is detached; the
- *     crosshair cursor is also cleared on detach.
+ *     drawing starts and restored when it ends or the manager is detached.
  *   - FIX: the circle/rectangle being dragged is never editable/draggable (its
  *     handles stole the drag); circleOptions/rectangleOptions editable,
  *     draggable and zIndex apply to the completed shape.
@@ -152,7 +163,7 @@
         return; // Native library present — do nothing
     }
 
-    var MCX_VERSION = '2.0.0-tenna.1';
+    var MCX_VERSION = '2.0.0-tenna.2';
 
     // Informational logging is opt-out per manager (`silent: true`) and can be
     // killed page-wide with window.mcxDrawingSilent. Warnings always print.
@@ -167,6 +178,10 @@
         if (!window.mcxDrawingDebug) return;
         console.log('[MCX debug] ' + label, data);
     }
+
+    // Value this manager sets as the map cursor while a tool is active; only a
+    // cursor still equal to it is restored afterwards.
+    var _CROSSHAIR = 'crosshair';
 
     // ── CSS Injection ──────────────────────────────────────
 
@@ -347,8 +362,9 @@
             this._lastMapClickTime = 0;   // Timestamp of the last accepted vertex click
 
             // Map settings preservation for drawing mode
-            this._savedMapSettings = null; // Stores original gestureHandling and disableDoubleClickZoom
-            this._savedTouchAction = '';   // Map div touch-action before drawing began
+            this._savedMapSettings = null; // What drawing changed on the map (double-click zoom, cursors, touch-action)
+            this._appliedTouchAction = ''; // touch-action this manager set on the map div
+            this._lockedFrom = null;       // gestureHandling to put back after a circle/rectangle drag
 
             // Drag-to-draw (circle / rectangle) state
             this._shapeDragging = false;
@@ -525,7 +541,6 @@
             }
 
             this._currentMode = mode;
-            this._updateCursor();
             this._updateToolbarState();
 
             // FIX: completed overlays default to clickable:true, so a click
@@ -539,32 +554,39 @@
 
                 if (mode)
                 {
-                    // Save original map settings when entering a drawing mode,
-                    // before anything below changes them
+                    // Save what the host had before anything below changes it. Only
+                    // values this manager itself sets are ever put back, so a change
+                    // the host makes mid-draw is not overwritten. Switching to another
+                    // tool re-applies the values below over such a change.
                     if (!this._savedMapSettings)
                     {
                         // google.maps.Map has no getOptions(); read via MVCObject.get().
                         // setOptions({x: undefined}) is ignored by Maps, so an unset
-                        // value is saved as the documented default to stay restorable.
-                        var gh = this._map.get('gestureHandling');
+                        // value is saved as its default to stay restorable.
                         var ddz = this._map.get('disableDoubleClickZoom');
+                        var dc = this._map.get('draggableCursor');
                         this._savedMapSettings = {
-                            gestureHandling: gh === undefined || gh === null ? 'auto' : gh,
-                            disableDoubleClickZoom: ddz === undefined || ddz === null ? false : ddz
+                            disableDoubleClickZoom: ddz === undefined || ddz === null ? false : ddz,
+                            draggableCursor: dc === undefined || dc === null ? '' : dc,
+                            divCursor: div ? div.style.cursor : '',
+                            touchAction: div ? div.style.touchAction : ''
                         };
-                        this._savedTouchAction = div ? div.style.touchAction : '';
                     }
 
-                    // With gestureHandling 'none' the map ignores touch gestures, so
-                    // the browser may scroll/zoom the page instead of letting the
-                    // finger draw. touch-action: none on the map div prevents that.
-                    if (div) div.style.touchAction = _isDragShapeMode(mode) ? 'none' : this._savedTouchAction;
+                    // The browser may scroll the page instead of letting a finger
+                    // draw a circle/rectangle; touch-action: none on the map div
+                    // prevents that.
+                    this._appliedTouchAction = _isDragShapeMode(mode) ? 'none' : this._savedMapSettings.touchAction;
+                    if (div)
+                    {
+                        div.style.touchAction = this._appliedTouchAction;
+                        div.style.cursor = _CROSSHAIR;
+                    }
 
-                    // Circle/Rectangle are drag-to-draw, so panning must be off while active
-                    this._map.setOptions({
-                        gestureHandling: _isDragShapeMode(mode) ? 'none' : 'auto',
-                        disableDoubleClickZoom: true
-                    });
+                    // Like Google's DrawingManager, the map keeps its own gesture
+                    // settings (zoom, wheel, pan) while a tool is merely selected;
+                    // circle/rectangle lock gestures only during the drag itself.
+                    this._map.setOptions({ disableDoubleClickZoom: true, draggableCursor: _CROSSHAIR });
                 } else
                 {
                     this._restoreMapSettings();
@@ -572,17 +594,27 @@
             }
         };
 
-        // Puts back the map settings and touch-action saved when drawing began.
+        // Puts back what drawing changed: double-click zoom, cursors and touch-action.
+        // A value is only restored if it is still the one this manager set.
         DrawingManager.prototype._restoreMapSettings = function ()
         {
-            if (!this._savedMapSettings) return;
+            var saved = this._savedMapSettings;
+            if (!saved) return;
 
-            this._map.setOptions(this._savedMapSettings);
+            var opts = {};
+            if (this._map.get('disableDoubleClickZoom') === true) opts.disableDoubleClickZoom = saved.disableDoubleClickZoom;
+            if (this._map.get('draggableCursor') === _CROSSHAIR) opts.draggableCursor = saved.draggableCursor;
+            this._map.setOptions(opts);
+
             var div = this._map.getDiv ? this._map.getDiv() : null;
-            if (div) div.style.touchAction = this._savedTouchAction;
+            if (div)
+            {
+                if (div.style.cursor === _CROSSHAIR) div.style.cursor = saved.divCursor;
+                if (div.style.touchAction === this._appliedTouchAction) div.style.touchAction = saved.touchAction;
+            }
 
             this._savedMapSettings = null;
-            this._savedTouchAction = '';
+            this._appliedTouchAction = '';
         };
 
         // Partial option update, mirroring the native DrawingManager surface.
@@ -823,8 +855,6 @@
                 ['touchcancel', function () { if (self._shapeDragging) self._cancelShapeDraw(); }]
             ];
             this._docListeners.forEach(function (l) { document.addEventListener(l[0], l[1]); });
-
-            this._updateCursor();
         };
 
         DrawingManager.prototype._detachFromMap = function ()
@@ -836,13 +866,10 @@
             }
             this._cancelShapeDraw();
 
-            // Leave the map pannable with a normal cursor even if detached mid-draw
+            // Put back what drawing changed on the map, even if detached mid-draw
             if (this._map)
             {
                 this._restoreMapSettings();
-                this._map.setOptions({ draggableCursor: '' });
-                var div = this._map.getDiv ? this._map.getDiv() : null;
-                if (div) div.style.cursor = '';
             }
 
             // Hand the completed overlays back in a usable state before letting go
@@ -1204,6 +1231,7 @@
 
             this._shapeDragging = true;
             this._shapeStart = e.latLng;
+            this._setDragLock(true);
 
             // The preview must not be editable/draggable: its resize handles sit
             // under the pointer and would steal the drag. The caller's editable/
@@ -1247,6 +1275,7 @@
         {
             if (!this._shapeDragging) return;
             this._shapeDragging = false;
+            this._setDragLock(false);
 
             var mode = this._currentMode;
             var preview = this._shapePreview;
@@ -1298,8 +1327,31 @@
         DrawingManager.prototype._cancelShapeDraw = function ()
         {
             if (this._shapePreview) { this._shapePreview.setMap(null); this._shapePreview = null; }
+            if (this._shapeDragging) this._setDragLock(false);
             this._shapeDragging = false;
             this._shapeStart = null;
+        };
+
+        // Freezes pan/zoom gestures for the duration of a circle/rectangle drag,
+        // then puts back the gesture setting the map had.
+        DrawingManager.prototype._setDragLock = function (locked)
+        {
+            if (!this._map) return;
+            if (locked)
+            {
+                // Remember the value as it is right now, so a change the host made
+                // while drawing is what comes back.
+                if (this._lockedFrom === null)
+                {
+                    var gh = this._map.get('gestureHandling');
+                    this._lockedFrom = gh === undefined || gh === null ? 'auto' : gh;
+                }
+                this._map.setOptions({ gestureHandling: 'none' });
+            } else if (this._lockedFrom !== null)
+            {
+                if (this._map.get('gestureHandling') === 'none') this._map.setOptions({ gestureHandling: this._lockedFrom });
+                this._lockedFrom = null;
+            }
         };
 
         // ── Finish handlers ────────────────────────────────
@@ -1465,23 +1517,6 @@
         };
 
         // ── Cursor & state helpers ─────────────────────────
-
-        DrawingManager.prototype._updateCursor = function ()
-        {
-            if (!this._map) return;
-            var container = this._map.getDiv ? this._map.getDiv() : null;
-
-            if (this._currentMode)
-            {
-                if (container) container.style.cursor = 'crosshair';
-                // Cursor only; gesture/double-click settings are owned by setDrawingMode
-                this._map.setOptions({ draggableCursor: 'crosshair' });
-            } else
-            {
-                if (container) container.style.cursor = '';
-                this._map.setOptions({ draggableCursor: '' });
-            }
-        };
 
         DrawingManager.prototype._updateToolbarState = function ()
         {

@@ -242,7 +242,9 @@
         });
 
         manager.setDrawingMode('circle');
-        assertEqual(map.get('gestureHandling'), 'none', 'gestureHandling should be none while drawing a circle');
+        assertEqual(map.get('gestureHandling'), 'greedy', 'Selecting a tool should leave gestureHandling alone');
+        google.maps.event.trigger(map, 'mousedown', { latLng: ll(37.77, -122.42) });
+        assertEqual(map.get('gestureHandling'), 'none', 'gestureHandling should be none while dragging a circle');
 
         manager.setMap(null);
         var restored = readSettings(map);
@@ -274,7 +276,7 @@
         // Enter marker mode
         manager.setDrawingMode('marker');
         var drawingSettings = readSettings(map);
-        assertEqual(drawingSettings.gestureHandling, 'auto', 'gestureHandling should be auto while drawing marker');
+        assertEqual(drawingSettings.gestureHandling, 'greedy', 'gestureHandling should be left alone while drawing marker');
         assertTrue(drawingSettings.disableDoubleClickZoom, 'disableDoubleClickZoom should be true while drawing');
 
         // Exit drawing mode
@@ -301,7 +303,7 @@
         // Enter circle mode
         manager.setDrawingMode('circle');
         var drawingSettings = readSettings(map);
-        assertEqual(drawingSettings.gestureHandling, 'none', 'gestureHandling should be none for drag-shapes');
+        assertEqual(drawingSettings.gestureHandling, 'cooperative', 'gestureHandling should be left alone until a drag starts');
         assertTrue(drawingSettings.disableDoubleClickZoom, 'disableDoubleClickZoom should be true while drawing');
 
         // Exit drawing mode
@@ -312,7 +314,7 @@
     });
 
     // Test 5: Settings Preservation - Rectangle mode
-    TestRunner.test('Rectangle mode also disables gestures', function ()
+    TestRunner.test('Rectangle mode leaves gestures alone until a drag', function ()
     {
         var map = createRealMap();
         map.setOptions({
@@ -328,7 +330,7 @@
         // Enter rectangle mode
         manager.setDrawingMode('rectangle');
         var drawingSettings = readSettings(map);
-        assertEqual(drawingSettings.gestureHandling, 'none', 'gestureHandling should be none for rectangle');
+        assertEqual(drawingSettings.gestureHandling, 'auto', 'gestureHandling should be left alone for rectangle');
 
         // Exit and verify restoration
         manager.setDrawingMode(null);
@@ -336,8 +338,8 @@
         assertEqual(restoredSettings.gestureHandling, 'auto', 'gestureHandling should be restored to auto');
     });
 
-    // Test 6: Panning disabled for drag-shapes
-    TestRunner.test('Panning is disabled during circle and rectangle drawing', function ()
+    // Test 6: Panning is locked only while a circle/rectangle is being dragged (as in Google)
+    TestRunner.test('Panning is locked only during a circle or rectangle drag', function ()
     {
         var map = createRealMap();
         map.setOptions({
@@ -349,20 +351,80 @@
             drawingControl: false
         });
 
-        // Test circle mode - panning should be disabled
-        manager.setDrawingMode('circle');
-        var circleSettings = readSettings(map);
-        assertEqual(circleSettings.gestureHandling, 'none', 'gestureHandling must be none (panning disabled) in circle mode');
+        ['circle', 'rectangle'].forEach(function (mode)
+        {
+            manager.setDrawingMode(mode);
+            assertEqual(readSettings(map).gestureHandling, 'greedy', mode + ': map stays pannable/zoomable while the tool is only selected');
 
-        // Test rectangle mode - panning should be disabled
-        manager.setDrawingMode('rectangle');
-        var rectangleSettings = readSettings(map);
-        assertEqual(rectangleSettings.gestureHandling, 'none', 'gestureHandling must be none (panning disabled) in rectangle mode');
+            google.maps.event.trigger(map, 'mousedown', { latLng: ll(37.77, -122.42) });
+            assertEqual(readSettings(map).gestureHandling, 'none', mode + ': gestures locked during the drag');
 
-        // Exit drawing mode and verify panning is restored
+            google.maps.event.trigger(map, 'mouseup', { latLng: ll(37.77, -122.42) });
+            assertEqual(readSettings(map).gestureHandling, 'greedy', mode + ': original gestureHandling back after the drag');
+        });
+
         manager.setDrawingMode(null);
-        var restoredSettings = readSettings(map);
-        assertEqual(restoredSettings.gestureHandling, 'greedy', 'gestureHandling should be restored to greedy (panning enabled)');
+        assertEqual(readSettings(map).gestureHandling, 'greedy', 'gestureHandling unchanged after leaving the tool');
+        cleanupMap(map);
+    });
+
+    TestRunner.test('Switching tools mid-drag puts gestureHandling back', function ()
+    {
+        var map = createRealMap();
+        map.setOptions({ gestureHandling: 'greedy' });
+        var manager = new google.maps.drawing.DrawingManager({ map: map, drawingControl: false });
+        var completed = 0;
+        google.maps.event.addListener(manager, 'overlaycomplete', function () { completed++; });
+
+        manager.setDrawingMode('circle');
+        google.maps.event.trigger(map, 'mousedown', { latLng: ll(37.77, -122.42) });
+        google.maps.event.trigger(map, 'mousemove', { latLng: ll(37.775, -122.42) });
+        assertEqual(readSettings(map).gestureHandling, 'none', 'Gestures locked during the drag');
+
+        manager.setDrawingMode('marker');
+        assertEqual(readSettings(map).gestureHandling, 'greedy', 'Original gestureHandling back after switching tools mid-drag');
+
+        // The release of the abandoned drag must not finish a circle or lock again
+        google.maps.event.trigger(map, 'mouseup', { latLng: ll(37.775, -122.42) });
+        assertEqual(readSettings(map).gestureHandling, 'greedy', 'gestureHandling still original after the release');
+        assertEqual(completed, 0, 'The abandoned circle must not be completed');
+
+        manager.setDrawingMode(null);
+        cleanupMap(map);
+    });
+
+    TestRunner.test('Host changes made while drawing are not overwritten, and the original cursor comes back', function ()
+    {
+        var map = createRealMap({ draggableCursor: 'help', disableDoubleClickZoom: false });
+        var div = map.getDiv();
+        div.style.cursor = 'move';
+        var manager = new google.maps.drawing.DrawingManager({ map: map, drawingControl: false });
+
+        manager.setDrawingMode('marker');
+        assertTrue(String(map.get('draggableCursor')).indexOf('crosshair') !== -1, 'Crosshair while a tool is active');
+        manager.setDrawingMode(null);
+        assertEqual(map.get('draggableCursor'), 'help', 'The host draggableCursor should be restored');
+        assertEqual(div.style.cursor, 'move', 'The host container cursor should be restored');
+
+        manager.setDrawingMode('marker');
+        map.setOptions({ draggableCursor: 'wait', disableDoubleClickZoom: false });
+        manager.setDrawingMode(null);
+        assertEqual(map.get('draggableCursor'), 'wait', 'A cursor the host set mid-draw must be kept');
+        assertFalse(map.get('disableDoubleClickZoom'), 'A disableDoubleClickZoom the host set mid-draw must be kept');
+
+        manager.setDrawingMode('circle');
+        google.maps.event.trigger(map, 'mousedown', { latLng: ll(37.77, -122.42) });
+        google.maps.event.trigger(map, 'mousedown', { latLng: ll(37.77, -122.42) }); // a second route for the same press
+        google.maps.event.trigger(map, 'mouseup', { latLng: ll(37.77, -122.42) });
+        assertEqual(map.get('gestureHandling'), 'auto', 'A doubled press must restore the original gestureHandling exactly');
+
+        manager.setDrawingMode(null);
+        manager.setDrawingMode('marker');
+        div.style.cursor = 'url(crosshair.png), auto';
+        var hostCursor = div.style.cursor; // as the browser serialises it
+        manager.setDrawingMode(null);
+        assertEqual(div.style.cursor, hostCursor, 'A host cursor that merely contains "crosshair" must be kept');
+        cleanupMap(map);
     });
 
     // Shape types: drive the polyfill with simulated map input and check what it emits
@@ -718,7 +780,7 @@
 
     TestRunner.test('Polyfill reports the Tenna fork version', function ()
     {
-        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.1', 'MCX_VERSION.');
+        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.2', 'MCX_VERSION.');
     });
 
     // ── Shape options applied to the finished overlay ──
@@ -1056,6 +1118,7 @@
     TestRunner.test('Map with no gesture options is restored to Maps defaults', function ()
     {
         var map = createRealMap();   // no gestureHandling / disableDoubleClickZoom given
+        var original = readSettings(map);
 
         var manager = new google.maps.drawing.DrawingManager({
             map: map,
@@ -1067,7 +1130,7 @@
 
         manager.setDrawingMode(null);
         var restored = readSettings(map);
-        assertEqual(restored.gestureHandling, 'auto', 'gestureHandling should return to the default (auto)');
+        assertEqual(restored.gestureHandling, original.gestureHandling, 'gestureHandling is never touched by a marker tool');
         assertFalse(restored.disableDoubleClickZoom, 'disableDoubleClickZoom should return to the default (false)');
     });
 
