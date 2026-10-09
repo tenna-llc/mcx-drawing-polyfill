@@ -1,6 +1,6 @@
 ﻿/*!
  * MCX Drawing — Google Maps Drawing Manager Polyfill (Unified)
- * Version 2.0.0-tenna.1 (Tenna fork of 2.0.0)
+ * Version 2.0.0-tenna.6 (Tenna fork of 2.0.0)
  *
  * File: mcx-drawing-polyfill.js
  *
@@ -56,6 +56,14 @@
  *
  * IMPORTANT: this file must be loaded AFTER the Google Maps JS API. Loading it
  *   first is now a hard error rather than a silent no-op.
+ *
+ * ── Tenna fork changes (2.0.0-tenna.6) ───────────────────────────────────
+ *   - FIX: only the finger that started a circle/rectangle drag can restart or
+ *     finish it. A second finger pressing or lifting is ignored on every route
+ *     that can start or end a drag: pointer events (primary flag and pointer
+ *     id), touch events (fingers still down), and the map's own mouse events.
+ *     Compatibility mouse events are ignored while a touch drag is in progress.
+ *     Set window.mcxDrawingDebug = true to log each ignored press/release.
  *
  * ── Tenna fork changes (2.0.0-tenna.1) ───────────────────────────────────
  *   - CHANGE: drawing modes use `gestureHandling` instead of the deprecated
@@ -152,7 +160,7 @@
         return; // Native library present — do nothing
     }
 
-    var MCX_VERSION = '2.0.0-tenna.1';
+    var MCX_VERSION = '2.0.0-tenna.6';
 
     // Informational logging is opt-out per manager (`silent: true`) and can be
     // killed page-wide with window.mcxDrawingSilent. Warnings always print.
@@ -352,6 +360,8 @@
 
             // Drag-to-draw (circle / rectangle) state
             this._shapeDragging = false;
+            this._dragPointerId = null;   // the pointer (finger) that started the drag
+            this._dragPointerType = null; // 'touch' | 'mouse' | 'pen' (null if unknown)
             this._shapePreview = null;
             this._shapeStart = null;
 
@@ -799,7 +809,15 @@
                 // Drag-to-draw handlers for circle / rectangle
                 google.maps.event.addListener(map, 'mousedown', function (e) { self._shapeDown(e); }),
                 google.maps.event.addListener(map, 'mousemove', function (e) { self._shapeMove(e); }),
-                google.maps.event.addListener(map, 'mouseup', function (e) { self._shapeUp(e); })
+                google.maps.event.addListener(map, 'mouseup', function (e)
+                {
+                    if (self._shapeDragging && self._isOtherFinger(e && e.domEvent, true))
+                    {
+                        _debug('shape release ignored', 'another finger lifted (map mouseup)');
+                        return;
+                    }
+                    self._shapeUp(e);
+                })
             ];
 
             // Safety net: finish the drag even if the pointer is released off the
@@ -809,14 +827,16 @@
             // Only the finger that started the drag ends it: a second finger
             // lifting is a non-primary pointer and leaves other touches down.
             this._docListeners = [
-                ['mouseup', function () { if (self._shapeDragging) self._shapeUp(); }],
+                ['mouseup', function (e) { if (self._shapeDragging && !self._isOtherFinger(e, true)) self._shapeUp(); }],
                 ['pointerup', function (e)
                 {
-                    if (self._shapeDragging && e.isPrimary !== false) self._shapeUp();
+                    if (self._shapeDragging && !self._isOtherFinger(e, true)) self._shapeUp();
+                    else if (self._shapeDragging) _debug('shape release ignored', 'another finger lifted (pointerup)');
                 }],
                 ['touchend', function (e)
                 {
-                    if (self._shapeDragging && !(e.touches && e.touches.length)) self._shapeUp();
+                    if (self._shapeDragging && !self._isOtherFinger(e, true)) self._shapeUp();
+                    else if (self._shapeDragging) _debug('shape release ignored', 'fingers still down (touchend)');
                 }],
                 // Not pointercancel: browsers also fire it when they take a touch
                 // over for page scrolling, which would discard a live drag.
@@ -1199,11 +1219,23 @@
             var button = e.domEvent ? e.domEvent.button : undefined;
             if (button !== undefined && button !== 0) return;
 
+            // Only the finger that started a drag may restart it: a second finger
+            // pressing while a circle/rectangle is being dragged must neither
+            // restart nor finish it.
+            if (this._shapeDragging && this._isOtherFinger(e.domEvent, false))
+            {
+                _debug('shape press ignored', 'another finger pressed during a drag');
+                return;
+            }
+
             // Clean up any stray preview
             if (this._shapePreview) { this._shapePreview.setMap(null); this._shapePreview = null; }
 
             this._shapeDragging = true;
             this._shapeStart = e.latLng;
+            var dom = e.domEvent;
+            this._dragPointerId = dom && dom.pointerId != null ? dom.pointerId : null;
+            this._dragPointerType = dom && dom.pointerType ? dom.pointerType : null;
 
             // The preview must not be editable/draggable: its resize handles sit
             // under the pointer and would steal the drag. The caller's editable/
@@ -1247,6 +1279,8 @@
         {
             if (!this._shapeDragging) return;
             this._shapeDragging = false;
+            this._dragPointerId = null;
+            this._dragPointerType = null;
 
             var mode = this._currentMode;
             var preview = this._shapePreview;
@@ -1299,7 +1333,33 @@
         {
             if (this._shapePreview) { this._shapePreview.setMap(null); this._shapePreview = null; }
             this._shapeDragging = false;
+            this._dragPointerId = null;
+            this._dragPointerType = null;
             this._shapeStart = null;
+        };
+
+        // Is this press/release from a finger other than the one that started the
+        // current circle/rectangle drag? `dom` is the browser event (or null).
+        DrawingManager.prototype._isOtherFinger = function (dom, isRelease)
+        {
+            if (!this._shapeDragging || !dom) return false;
+
+            // Pointer events: the first finger down is the primary pointer; any
+            // other pointer is a second finger.
+            if (dom.isPrimary === false) return true;
+            if (this._dragPointerId != null && dom.pointerId != null && dom.pointerId !== this._dragPointerId) return true;
+
+            // Touch events: `touches` lists the fingers still on the screen. A press
+            // with more than one is a second finger; a release only counts when
+            // none is left.
+            if (dom.touches) return isRelease ? dom.touches.length > 0 : dom.touches.length > 1;
+
+            // A plain mouse event while a touch drag is running is the browser's
+            // compatibility event, not the drawing finger: its release comes as a
+            // pointer/touch event.
+            if (isRelease && this._dragPointerType === 'touch' && dom.pointerId == null && dom.isPrimary == null) return true;
+
+            return false;
         };
 
         // ── Finish handlers ────────────────────────────────

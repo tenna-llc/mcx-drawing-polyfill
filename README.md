@@ -66,6 +66,7 @@ This polyfill solves the problem by **perfectly replicating the original Google 
 * **Native UI Replicated:** Automatically injects the classic white Google Maps drawing toolbar (Pan, Marker, Polyline, Polygon) using the Custom Controls API.
 * **Event Bridging:** Fires standard `overlaycomplete`, `markercomplete`, `polylinecomplete`, and `polygoncomplete` events so your legacy listeners don't break.
 * **Smart Finishing Nodes:** Automatically adds an interactive "finishing node" (a white circle) to easily close polygons or terminate polylines without relying on clunky double-clicks.
+* **Touch-safe drawing *(2.0.0-tenna.6)*:** on a touch device only the finger that started a circle or rectangle can move or finish it. A second finger pressing or lifting is ignored. Set `window.mcxDrawingDebug = true` to log ignored presses and releases.
 
 ## 🆕 Update — 26 June 2026: Circle & Rectangle Tools
 
