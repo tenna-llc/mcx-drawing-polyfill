@@ -65,6 +65,49 @@
         .controls {
             margin-bottom: 20px;
         }
+        .playground {
+            margin-top: 20px;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .custom-tools {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            margin: 10px 0;
+        }
+        .custom-tools button {
+            background: #fff;
+            color: #1a73e8;
+            border: 1px solid #1a73e8;
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+        .custom-tools button.active {
+            background: #1a73e8;
+            color: #fff;
+        }
+        .custom-tools button:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+        .custom-tools label {
+            font-size: 13px;
+            margin-left: 8px;
+        }
+        #playground-log {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 160px;
+            overflow-y: auto;
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px;
+        }
     </style>
 </head>
 <body>
@@ -96,6 +139,35 @@
         </div>
     </div>
 
+    <!-- Manual playground: its own map and manager, so it never affects the automated tests -->
+    <div class="playground">
+        <h2 style="margin-top: 0;">Manual Drawing Playground</h2>
+        <p class="info">
+            The map toolbar shows every tool (marker, polyline, polygon, circle, rectangle).
+            The custom buttons below drive the same manager through <code>setDrawingMode()</code>,
+            the way an app with its own toolbar would.
+        </p>
+        <button onclick="openPlayground()" id="openPlaygroundBtn">Open Playground</button>
+
+        <div class="custom-tools" id="customTools">
+            <strong style="font-size: 13px;">Custom tools:</strong>
+            <button data-mode="" disabled>Pan</button>
+            <button data-mode="marker" disabled>Marker</button>
+            <button data-mode="polyline" disabled>Polyline</button>
+            <button data-mode="polygon" disabled>Polygon</button>
+            <button data-mode="circle" disabled>Circle</button>
+            <button data-mode="rectangle" disabled>Rectangle</button>
+            <label>Colour <input type="color" id="pgColour" value="#e8710a" disabled></label>
+            <label><input type="checkbox" id="pgEditable" checked disabled> Editable</label>
+            <label><input type="checkbox" id="pgToolbar" checked disabled> Map toolbar</label>
+            <button id="pgClear" disabled>Clear shapes</button>
+        </div>
+
+        <div id="playground-map" style="width: 100%; height: 500px; border: 1px solid #ddd; border-radius: 4px;"></div>
+        <p style="font-size: 13px; font-weight: 600; margin: 10px 0 4px;">Events</p>
+        <div id="playground-log"></div>
+    </div>
+
     <!-- Google Maps API (loaded dynamically after user provides key) -->
     <script id="maps-api"></script>
 
@@ -105,8 +177,24 @@
         var polyfillLoaded = false;
         var testsLoaded = false;
 
-        // Load Google Maps API from localStorage
+        // Maps, the polyfill and the tests load once; Run Tests and the playground
+        // share the same load so a second click never injects the scripts again.
+        var mapsApiPromise = null;
         function loadGoogleMapsAPI()
+        {
+            if (!mapsApiPromise)
+            {
+                mapsApiPromise = Promise.resolve(startGoogleMapsLoad()).then(function (ok)
+                {
+                    if (!ok) mapsApiPromise = null; // allow a retry, e.g. after saving a key
+                    return ok;
+                });
+            }
+            return mapsApiPromise;
+        }
+
+        // Load Google Maps API from localStorage
+        function startGoogleMapsLoad()
         {
             var apiKey = localStorage.getItem('mcx-test-api-key');
             if (!apiKey)
@@ -232,12 +320,11 @@
             }
             testsRunning = true;
 
-            // Load Google Maps API if not already loaded
-            if (!mapsApiLoaded)
+            // Load Google Maps API if not already loaded (or wait for a load the playground started)
+            if (!testsLoaded)
             {
                 showStatus('⏳ Loading Google Maps API...', 'success');
-                await loadGoogleMapsAPI();
-                if (!mapsApiLoaded)
+                if (!await loadGoogleMapsAPI())
                 {
                     testsRunning = false;
                     showStatus('❌ Failed to load Google Maps API', 'error');
@@ -297,6 +384,122 @@
             {
                 showStatus('❌ ' + MCXDrawingTestRunner.failed + ' test(s) failed on Maps ' + google.maps.version, 'error');
             }
+        }
+
+        // ── Manual playground ──────────────────────────────
+        var playground = null; // { map, manager, overlays }
+
+        async function openPlayground()
+        {
+            if (playground) return;
+            var openBtn = document.getElementById('openPlaygroundBtn');
+            if (openBtn.disabled) return; // already opening
+            openBtn.disabled = true;
+
+            if (!testsLoaded) showStatus('⏳ Loading Google Maps API...', 'success');
+            if (!await loadGoogleMapsAPI() || !(google.maps.drawing && google.maps.drawing.DrawingManager))
+            {
+                openBtn.disabled = false;
+                return;
+            }
+
+            var map = new google.maps.Map(document.getElementById('playground-map'), {
+                zoom: 13,
+                center: { lat: 37.7749, lng: -122.4194 }
+            });
+            var manager = new google.maps.drawing.DrawingManager({
+                map: map,
+                silent: true, // keep [MCX] logs out of the captured test output
+                drawingControl: true,
+                drawingControlOptions: {
+                    drawingModes: ['marker', 'polyline', 'polygon', 'circle', 'rectangle']
+                }
+            });
+            playground = { map: map, manager: manager, overlays: [] };
+            applyPlaygroundStyle();
+
+            // There is no drawingmode_changed event, so keep the custom buttons in
+            // sync by wrapping setDrawingMode (the map toolbar calls it too).
+            var setMode = manager.setDrawingMode.bind(manager);
+            manager.setDrawingMode = function (mode)
+            {
+                setMode(mode);
+                syncCustomTools();
+            };
+
+            google.maps.event.addListener(manager, 'overlaycomplete', function (e)
+            {
+                playground.overlays.push(e.overlay);
+                playgroundLog('overlaycomplete: ' + e.type + describeOverlay(e));
+                syncCustomTools();
+            });
+
+            document.querySelectorAll('#customTools [data-mode]').forEach(function (btn)
+            {
+                btn.addEventListener('click', function ()
+                {
+                    manager.setDrawingMode(btn.dataset.mode || null);
+                    playgroundLog('custom button: ' + (btn.dataset.mode || 'pan'));
+                });
+            });
+            document.getElementById('pgColour').addEventListener('input', applyPlaygroundStyle);
+            document.getElementById('pgEditable').addEventListener('change', applyPlaygroundStyle);
+            document.getElementById('pgToolbar').addEventListener('change', function (ev)
+            {
+                manager.setOptions({ drawingControl: ev.target.checked });
+            });
+            document.getElementById('pgClear').addEventListener('click', function ()
+            {
+                playground.overlays.forEach(function (o) { if (o.setMap) o.setMap(null); else o.map = null; });
+                playground.overlays = [];
+                playgroundLog('cleared shapes');
+            });
+
+            document.querySelectorAll('#customTools button, #customTools input').forEach(function (el) { el.disabled = false; });
+            syncCustomTools();
+            playgroundLog('playground ready (Maps ' + google.maps.version + ', MCX ' + google.maps.drawing.MCX_VERSION + ')');
+        }
+
+        // Custom styling, applied to shapes drawn from now on
+        function applyPlaygroundStyle()
+        {
+            if (!playground) return;
+            var colour = document.getElementById('pgColour').value;
+            var editable = document.getElementById('pgEditable').checked;
+            var line = { strokeColor: colour, strokeWeight: 3, editable: editable };
+            var area = { strokeColor: colour, strokeWeight: 2, fillColor: colour, fillOpacity: 0.25, editable: editable, draggable: editable };
+            playground.manager.setOptions({
+                polylineOptions: line,
+                polygonOptions: area,
+                circleOptions: area,
+                rectangleOptions: area
+            });
+        }
+
+        function syncCustomTools()
+        {
+            if (!playground) return;
+            var mode = playground.manager.getDrawingMode() || '';
+            document.querySelectorAll('#customTools [data-mode]').forEach(function (btn)
+            {
+                btn.classList.toggle('active', btn.dataset.mode === mode);
+            });
+        }
+
+        function describeOverlay(e)
+        {
+            var o = e.overlay;
+            if (e.type === 'circle') return ' radius ' + Math.round(o.getRadius()) + ' m';
+            if (e.type === 'polyline' || e.type === 'polygon') return ' ' + o.getPath().getLength() + ' points';
+            return '';
+        }
+
+        function playgroundLog(msg)
+        {
+            var log = document.getElementById('playground-log');
+            var line = document.createElement('div');
+            line.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+            log.insertBefore(line, log.firstChild);
         }
 
         // On page load, restore API key if exists
