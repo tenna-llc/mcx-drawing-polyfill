@@ -37,7 +37,7 @@ All styling options are **partial overrides** — supply only the fields you wan
 | `circleOptions` | circles | Applied to the finished shape. Unset values use Google's defaults (not editable/draggable, clickable). Like Google, finished circles, rectangles and polygons get `zIndex` 0, 1, 2… in drawing order unless you set one. |
 | `rectangleOptions` | rectangles | As above. |
 | `ghostlineOptions` | line from the last point to the cursor | Solid in the shape's stroke by default; pass `icons` for a dotted line (the solid stroke is then hidden unless you set `strokeOpacity`). `clickable` and `zIndex` are **fixed internally** and cannot be overridden. |
-| `finishingMarkerSVGOptions` | finishing node (both modes) | `fillColor`, `fillOpacity`, `strokeColor`, `strokeWeight`, `scale` — rendered as a Symbol in basic mode and as a generated SVG in advanced mode. |
+| `finishingMarkerSVGOptions` | finishing node (both modes) | `fillColor`, `fillOpacity`, `strokeColor`, `strokeWeight`, `scale` — rendered as a Symbol in basic mode and as a generated SVG in advanced mode. Unless you set `strokeColor`, the outline follows the stroke colour of the shape being drawn (`polygonOptions` or `polylineOptions`), or Google's default black if that is not set. *(2.0.0-tenna.5; earlier builds used a fixed blue.)* |
 | `finishingMarkerSVG` | finishing node (advanced only) | Custom SVG markup; ignored (with a warning) in basic mode. Overrides `finishingMarkerSVGOptions`. |
 
 ### Helpers

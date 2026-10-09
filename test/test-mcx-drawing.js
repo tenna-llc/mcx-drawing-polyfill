@@ -780,7 +780,7 @@
 
     TestRunner.test('Polyfill reports the Tenna fork version', function ()
     {
-        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.2', 'MCX_VERSION.');
+        assertEqual(google.maps.drawing.MCX_VERSION, '2.0.0-tenna.5', 'MCX_VERSION.');
     });
 
     // ── Shape options applied to the finished overlay ──
@@ -831,6 +831,23 @@
             assertTrue(o.get('clickable') === true, type + ' should be clickable by default');
         });
         cleanupMap(map);
+    });
+
+    TestRunner.test('The finishing node follows the shape stroke, not a hard-coded blue', async function ()
+    {
+        var map = createRealMap();
+        var t = managerWithOptions(map, { polygonOptions: { strokeColor: '#ff0000' } });
+        t.manager.setDrawingMode('polygon');
+        await clickMap(map, [ll(37.77, -122.42), ll(37.78, -122.42)]);
+        assertEqual(t.manager._finishingMarker.get('icon').strokeColor, '#ff0000', 'Node should use the polygon stroke');
+        cleanupMap(map);
+
+        var map2 = createRealMap();
+        var t2 = managerWithOptions(map2, {});
+        t2.manager.setDrawingMode('polyline');
+        await clickMap(map2, [ll(37.77, -122.42)]);
+        assertEqual(t2.manager._finishingMarker.get('icon').strokeColor, '#000000', 'Default node should be black like Google shapes');
+        cleanupMap(map2);
     });
 
     TestRunner.test('Line to the cursor is solid in the polygon stroke unless ghostlineOptions overrides', async function ()

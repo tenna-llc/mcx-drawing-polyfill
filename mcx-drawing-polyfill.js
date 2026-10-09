@@ -1,6 +1,6 @@
 ﻿/*!
  * MCX Drawing — Google Maps Drawing Manager Polyfill (Unified)
- * Version 2.0.0-tenna.2 (Tenna fork of 2.0.0)
+ * Version 2.0.0-tenna.5 (Tenna fork of 2.0.0)
  *
  * File: mcx-drawing-polyfill.js
  *
@@ -56,6 +56,11 @@
  *
  * IMPORTANT: this file must be loaded AFTER the Google Maps JS API. Loading it
  *   first is now a hard error rather than a silent no-op.
+ *
+ * ── Tenna fork changes (2.0.0-tenna.5) ───────────────────────────────────
+ *   - CHANGE: the finishing node's default stroke follows the shape being drawn
+ *     (else Google's default black) instead of a hard-coded blue; set
+ *     finishingMarkerSVGOptions.strokeColor to override.
  *
  * ── Tenna fork changes (2.0.0-tenna.2) ───────────────────────────────────
  *   - CHANGE: like Google's DrawingManager, selecting a tool leaves the map's
@@ -163,7 +168,7 @@
         return; // Native library present — do nothing
     }
 
-    var MCX_VERSION = '2.0.0-tenna.2';
+    var MCX_VERSION = '2.0.0-tenna.5';
 
     // Informational logging is opt-out per manager (`silent: true`) and can be
     // killed page-wide with window.mcxDrawingSilent. Warnings always print.
@@ -435,7 +440,8 @@
             this._finishingMarkerSVGOptions = {
                 fillColor: '#ffffff',
                 fillOpacity: 1,
-                strokeColor: '#1a73e8',
+                // strokeColor is resolved when the node is built: the caller's
+                // value, else the shape's own stroke, else Google's default black.
                 strokeWeight: 2,
                 scale: 5
             };
@@ -459,14 +465,6 @@
                 this._finishingMarkerSVGOptions.boundingSize =
                     (parseFloat(this._finishingMarkerSVGOptions.scale != null ? this._finishingMarkerSVGOptions.scale : 1) * 2) +
                     (parseFloat(this._finishingMarkerSVGOptions.strokeWeight != null ? this._finishingMarkerSVGOptions.strokeWeight : 0) * 2);
-
-                // Generate a circle SVG matching the Symbol the basic mode uses
-                var fo = this._finishingMarkerSVGOptions;
-                this._finishingMarkerSVG =
-                    '<svg height="' + fo.boundingSize + '" width="' + fo.boundingSize + '" xmlns="http://www.w3.org/2000/svg">' +
-                    '<circle cx="' + (fo.boundingSize / 2) + '" cy="' + (fo.boundingSize / 2) + '" r="' + (fo.scale != null ? fo.scale : 1) + '"' +
-                    ' fill="' + (fo.fillColor || '#000') + '" opacity="' + (fo.fillOpacity != null ? fo.fillOpacity : 1) + '"' +
-                    ' stroke="' + (fo.strokeColor || 'transparent') + '" stroke-width="' + (fo.strokeWeight != null ? fo.strokeWeight : 0) + '"/></svg>';
             }
 
             // Attach to map if provided — LAST, so all options above are ready
@@ -688,6 +686,22 @@
             return !!(this._options && this._options.finishingMarkerSVG);
         };
 
+        DrawingManager.prototype._finishingStroke = function ()
+        {
+            var fo = this._finishingMarkerSVGOptions;
+            if (fo.strokeColor) return fo.strokeColor;
+            return this._shapeStroke().strokeColor || '#000000';
+        };
+
+        DrawingManager.prototype._generateFinishingSVG = function ()
+        {
+            var fo = this._finishingMarkerSVGOptions;
+            return '<svg height="' + fo.boundingSize + '" width="' + fo.boundingSize + '" xmlns="http://www.w3.org/2000/svg">' +
+                '<circle cx="' + (fo.boundingSize / 2) + '" cy="' + (fo.boundingSize / 2) + '" r="' + (fo.scale != null ? fo.scale : 1) + '"' +
+                ' fill="' + (fo.fillColor || '#000') + '" opacity="' + (fo.fillOpacity != null ? fo.fillOpacity : 1) + '"' +
+                ' stroke="' + this._finishingStroke() + '" stroke-width="' + (fo.strokeWeight != null ? fo.strokeWeight : 0) + '"/></svg>';
+        };
+
         DrawingManager.prototype._resolveMarkerMode = function ()
         {
             var requested = this._options.markerType || 'auto';
@@ -786,7 +800,7 @@
         DrawingManager.prototype._buildFinishingContent = function ()
         {
             var container = document.createElement('div');
-            container.innerHTML = this._finishingMarkerSVG;
+            container.innerHTML = this._finishingMarkerSVG || this._generateFinishingSVG();
             container.style.cursor = 'pointer'; // Creates the "Hand" icon on hover automatically
             container.style.fontSize = 0;
             container.style.position = 'relative';
@@ -1132,10 +1146,20 @@
                 return;
             }
 
+            // The node's default colour follows the shape being drawn, so rebuild
+            // it when that changes (e.g. polygon -> polyline).
+            var stroke = this._finishingStroke();
+            if (this._finishingMarker && this._finishingStrokeUsed !== stroke)
+            {
+                this._finishingMarker.setMap(null);
+                this._finishingMarker = null;
+            }
+
             if (!this._finishingMarker)
             {
                 var fo = this._finishingMarkerSVGOptions;
                 var markerOpts;
+                this._finishingStrokeUsed = stroke;
 
                 if (this._markerMode === 'advanced')
                 {
@@ -1152,7 +1176,7 @@
                             path: google.maps.SymbolPath.CIRCLE,
                             fillColor: fo.fillColor,
                             fillOpacity: fo.fillOpacity,
-                            strokeColor: fo.strokeColor,
+                            strokeColor: stroke,
                             strokeWeight: fo.strokeWeight,
                             scale: fo.scale
                         },
